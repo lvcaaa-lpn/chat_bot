@@ -102,6 +102,11 @@ QUANDO CI SONO MOLTI RISULTATI
 - Se la risposta di trova_macchina contiene "richiede_conferma": true,
   ripeti al cliente quale macchina hai selezionato e chiedi conferma
   prima di cercare il ricambio.
+- Se la risposta contiene "interpretazione" (il modello scritto dal
+  cliente non esiste esattamente e le candidate proposte sono le piu'
+  simili per nome, es. refuso di battitura), spiegalo al cliente in modo
+  esplicito ("non trovo esattamente 'X', forse intendevi uno di questi?")
+  prima di procedere: non e' un'identificazione certa.
 - Se trova_macchina restituisce "in_preparazione": true, spiega al cliente
   che il catalogo di quel modello si sta preparando e servono alcuni
   minuti. Intanto chiedigli la matricola e quale ricambio gli serve, cosi'
@@ -197,9 +202,22 @@ class Conversazione:
                    for a in self.alias.get(_norm(marca), []))
 
     def tronca(self, massimo=40):
-        """Le conversazioni lunghe costano: tengo il prompt e la coda."""
-        if len(self.messaggi) > massimo:
-            self.messaggi = [self.messaggi[0]] + self.messaggi[-(massimo - 1):]
+        """
+        Le conversazioni lunghe costano: tengo il prompt e la coda.
+
+        Il taglio non puo' cadere a meta' di un turno (messaggio 'assistant'
+        con tool_calls + le risposte 'tool' corrispondenti): un tool_call_id
+        senza risposta, o viceversa, fa rifiutare l'intera richiesta
+        dall'LLM. Percio' si scorre dal punto di taglio "grezzo" fino al
+        prossimo messaggio 'user' di questa stessa conversazione, che e'
+        sempre l'inizio di un turno intero.
+        """
+        if len(self.messaggi) <= massimo:
+            return
+        taglio = len(self.messaggi) - (massimo - 1)
+        while taglio < len(self.messaggi) and self.messaggi[taglio]["role"] != "user":
+            taglio += 1
+        self.messaggi = [self.messaggi[0]] + self.messaggi[taglio:]
 
     def turno(self, llm, modello, testo, su_strumento=None):
         """

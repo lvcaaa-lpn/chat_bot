@@ -25,7 +25,7 @@ from .api import SdfApi
 from .db import Db
 from .crawler import Crawler
 from .risoluzione import risolvi_variante, telaio_completo
-from ..testo import parole_chiave
+from ..testo import parole_chiave, piu_simili
 
 log = logging.getLogger("sdf")
 
@@ -37,6 +37,13 @@ MAX_CANDIDATE = 12
 _IN_CORSO = {}
 _PROGRESSO = {}
 _IN_CORSO_LK = threading.Lock()
+
+# elenco completo modelli per marca, per il fallback fuzzy quando la
+# ricerca sul portale (per refuso di battitura) non trova nulla. E'
+# anagrafica che cambia raramente: si scarica una volta per marca e si
+# condivide fra tutte le conversazioni, come il crawl dei cataloghi.
+_MODELLI_CACHE = {}
+_MODELLI_LK = threading.Lock()
 
 # ordine di ricerca quando la marca non e' nota
 MARCHE = ["SAME", "DEUTZ-FAHR", "HURLIMANN", "LAMBORGHINI"]
@@ -119,8 +126,24 @@ class FornitoreSdf(Fornitore):
                 continue
 
         if not candidate:
-            return {"marca": self.marca, "trovato": False,
-                    "messaggio": f"Nessun modello SDF per '{modello}'."}
+            simili = self._cerca_fuzzy(marche, modello)
+            if not simili:
+                return {"marca": self.marca, "trovato": False,
+                        "messaggio": f"Nessun modello SDF per '{modello}'."}
+            return {"marca": self.marca, "trovato": True,
+                    "richiede_conferma": True,
+                    "interpretazione": (
+                        f"Nessun modello SDF corrisponde esattamente a "
+                        f"'{modello}': le candidate proposte sono le piu' "
+                        f"simili per nome (possibile refuso di battitura). "
+                        f"Dillo al cliente e chiedi conferma prima di "
+                        f"proseguire."),
+                    "candidate": [{"id": _id_macchina(v["brand"], v["family_id"],
+                                                      v["model_id"]),
+                                   "nome": f"{v['brand']} {v['nome']}",
+                                   "matricola_da": _vin_da_nome(v["nome"]) or ""}
+                                  for v in simili],
+                    "totale_candidate": len(simili)}
 
         # progressivo: la scelta dell'intervallo la fa il codice, non l'LLM
         ambiguita = None
@@ -176,6 +199,46 @@ class FornitoreSdf(Fornitore):
                     "matricola": _vin_da_nome(nome) or "",
                 })
         return out
+
+    def _tutti_i_modelli(self, brand_label):
+        """Tutti i modelli di una marca, con cache in memoria (vedi
+        _MODELLI_CACHE sopra): serve solo per il fallback fuzzy, non per la
+        ricerca normale, quindi non e' un problema se resta un po' stantia
+        finche' il processo non riparte."""
+        with _MODELLI_LK:
+            if brand_label in _MODELLI_CACHE:
+                return _MODELLI_CACHE[brand_label]
+        code = BRANDS[brand_label]
+        out = []
+        try:
+            for fam in self.api.families(brand=code):
+                for m in self.api.models(fam["row_id"], brand=code):
+                    out.append({
+                        "brand": brand_label, "family_id": fam["row_id"],
+                        "model_id": m["row_id"], "nome": m["name"],
+                        # il confronto fuzzy va fatto senza il VIN iniziale
+                        # ("ARGON 65 -> NNZJY...") o diluirebbe la somiglianza
+                        "nome_confronto": m["name"].split("->")[0].strip(),
+                    })
+        except Exception:
+            return []
+        with _MODELLI_LK:
+            _MODELLI_CACHE[brand_label] = out
+        return out
+
+    def _cerca_fuzzy(self, marche, modello):
+        """Fallback quando la ricerca esatta sul portale non trova nulla:
+        prova a correggere un refuso di battitura confrontando 'modello'
+        con l'elenco completo dei modelli della marca."""
+        pool = []
+        for label in marche:
+            if label not in BRANDS:
+                continue
+            pool += self._tutti_i_modelli(label)
+        if not pool:
+            return []
+        return piu_simili(modello, pool, soglia=0.6, massimo=MAX_CANDIDATE,
+                          chiave=lambda v: v["nome_confronto"])
 
     def _per_vin(self, vin, marca=None):
         marche = [marca.upper()] if marca and marca.upper() in BRANDS else MARCHE

@@ -200,20 +200,46 @@ def trova_cataloghi(con, modello=None, matricola=None, testo=None):
     E' il primo passo: individuare QUALE catalogo riguarda la macchina.
     """
     righe = con.execute("SELECT * FROM cataloghi ORDER BY serie").fetchall()
+    righe = list(righe)
+
+    token = None
+    corretti = {}
+    if modello:
+        token = [t for t in re.split(r'\W+', modello.upper()) if t]
+        # Se nessun token del cliente compare tale e quale in nessun
+        # modello, prova a correggere i refusi di battitura (es. "GOLDNI",
+        # "3O5O") contro il vocabolario reale prima di arrendersi: senza
+        # questo passo un errore di battitura fa sembrare che la macchina
+        # non esista affatto.
+        vocabolario = {x.upper() for r in righe
+                       for x in json.loads(r["modelli"] or "[]")}
+        if vocabolario and not any(t in vocabolario for t in token):
+            from ..testo import piu_simili
+            for t in token:
+                # sotto 4 caratteri il fuzzy matching su codici numerici e'
+                # inaffidabile: "384" e "38" sono "simili" per l'algoritmo
+                # ma sono macchine diverse, non un refuso plausibile.
+                if len(t) < 4:
+                    continue
+                trovati = piu_simili(t, vocabolario, soglia=0.7, massimo=1)
+                if trovati:
+                    corretti[t] = trovati[0]
+
     out = []
     for r in righe:
         modelli = json.loads(r["modelli"] or "[]")
         punteggio = 0
 
         if modello:
-            import re
-            token = [t for t in re.split(r'\W+', modello.upper()) if t]
             desc = (r["descrizione"] or "").upper()
             mod_up = [x.upper() for x in modelli]
 
             for t in token:
-                if t in mod_up:
-                    punteggio += 10      # match su un modello: segnale forte
+                effettivo = corretti.get(t, t)
+                if effettivo in mod_up:
+                    # match esatto: segnale forte. Corretto da un refuso:
+                    # segnale piu' debole, va confermato col cliente.
+                    punteggio += 10 if effettivo == t else 6
                 elif t in desc:
                     punteggio += 1       # match sulla descrizione: debole
             if punteggio == 0:
@@ -229,6 +255,7 @@ def trova_cataloghi(con, modello=None, matricola=None, testo=None):
         d = dict(r)
         d["modelli"] = modelli
         d["punteggio"] = punteggio
+        d["corretto"] = bool(corretti)
         out.append(d)
 
     out.sort(key=lambda d: -d["punteggio"])

@@ -87,21 +87,32 @@ class FornitoreGoldoni(Fornitore):
         # in silenzio con quella che si trova gia' scaricata.
         migliore = tutti[0]["punteggio"]
         pareggio = sum(1 for c in tutti if c["punteggio"] == migliore) > 1
+        # Se il modello e' stato riconosciuto correggendo un refuso di
+        # battitura (vedi db.trova_cataloghi), l'interpretazione va sempre
+        # confermata dal cliente: mai selezionare da soli.
+        corretto = tutti[0].get("corretto", False)
 
         self.catalogo = None
         self.nome_macchina = None
-        if len(scaricati) == 1 and not pareggio:
+        if len(scaricati) == 1 and not pareggio and not corretto:
             self.catalogo = scaricati[0]["codice"]
             self.nome_macchina = scaricati[0]["serie"]
 
-        return {"marca": self.marca, "trovato": True,
+        esito = {"marca": self.marca, "trovato": True,
                 "selezionata": self.nome_macchina,
-                "richiede_conferma": bool(self.nome_macchina),
+                "richiede_conferma": bool(self.nome_macchina) or corretto,
                 "candidate": [{"id": c["codice"], "nome": c["serie"],
                             "modelli": c["modelli"],
                             "validita": f"{c['validita_da'] or '...'} -> "
                                         f"{c['validita_a'] or '...'}"}
                             for c in scaricati[:6]]}
+        if corretto:
+            esito["interpretazione"] = (
+                f"Nessun modello Goldoni corrisponde esattamente a "
+                f"'{modello}': le candidate proposte sono le piu' simili "
+                f"per nome. Dillo al cliente e chiedi conferma prima di "
+                f"proseguire.")
+        return esito
 
     def scegli(self, id_macchina):
         r = self.con.execute("SELECT serie FROM cataloghi WHERE codice=?",

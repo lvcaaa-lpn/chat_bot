@@ -26,6 +26,7 @@ Due trasformazioni, entrambe volutamente grossolane:
 
 import re
 import unicodedata
+from difflib import SequenceMatcher
 
 VOCALI = "aeiou"
 LUNGHEZZA_MINIMA = 4        # sotto questa soglia la parola resta intatta
@@ -82,3 +83,36 @@ def parole_chiave(testo, togli_ferma=True, massimo=6):
         if len(out) >= massimo:
             break
     return out
+
+
+# -------------------------------------------------------------------
+# Ricerca approssimata: refusi di battitura su nomi macchina/modello
+# ("Goldni" -> "Goldoni", "Argom 65" -> "Argon 65").
+#
+# Usa difflib.SequenceMatcher (libreria standard, nessuna dipendenza
+# esterna) invece di implementare a mano la distanza di Levenshtein:
+# per confrontare nomi/modelli di poche parole la differenza di
+# precisione e' irrilevante, e SequenceMatcher tollera meglio anche
+# blocchi di caratteri spostati, non solo lettere singole sbagliate.
+# -------------------------------------------------------------------
+
+def _somiglianza(a, b):
+    return SequenceMatcher(None, senza_accenti(a).lower(),
+                           senza_accenti(b).lower()).ratio()
+
+
+def piu_simili(query, candidati, soglia=0.72, massimo=5, chiave=None):
+    """
+    Restituisce i candidati piu' simili a 'query', ordinati per somiglianza
+    decrescente, scartando quelli sotto 'soglia' (0-1). 'chiave' estrae il
+    testo da confrontare se 'candidati' non e' una lista di stringhe.
+
+    Non e' pensata per sostituire una ricerca esatta/normalizzata: va usata
+    solo come fallback quando quella non trova nulla, perche' puo' produrre
+    falsi positivi su nomi brevi o molto simili tra loro.
+    """
+    testo = lambda c: chiave(c) if chiave else c
+    valutati = [(c, _somiglianza(query, testo(c))) for c in candidati]
+    valutati = [(c, p) for c, p in valutati if p >= soglia]
+    valutati.sort(key=lambda cp: -cp[1])
+    return [c for c, _ in valutati[:massimo]]
