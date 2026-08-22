@@ -1,0 +1,42 @@
+
+# db.py
+def trova_cataloghi(con, modello=None, matricola=None, testo=None):
+    """
+    Ricerca incrociata: modello + matricola + testo libero.
+    E' il primo passo: individuare QUALE catalogo riguarda la macchina.
+    """
+    righe = con.execute("SELECT * FROM cataloghi ORDER BY serie").fetchall()
+    out = []
+    for r in righe:
+        modelli = json.loads(r["modelli"] or "[]")
+
+        if modello:
+            import re
+            query_pulita = modello.strip().upper()
+            token = [t for t in re.split(r'\W+', query_pulita) if t]
+
+            def valido(t):
+                # un token solo numerico conta solo se e' l'UNICA cosa scritta
+                if t.isdigit():
+                    return len(token) == 1
+                return True
+
+            desc = (r["descrizione"] or "").upper()
+            corrisponde = any(
+                valido(t) and (t == x.upper() or t in desc)
+                for t in token for x in (modelli or [None]) if x
+            )
+            if not corrisponde:
+                continue
+
+        if matricola and not dentro_intervallo(matricola,
+                                               r["validita_da"], r["validita_a"]):
+            continue
+
+        if testo and testo.lower() not in (r["descrizione"] or "").lower():
+            continue
+
+        d = dict(r)
+        d["modelli"] = modelli
+        out.append(d)
+    return out

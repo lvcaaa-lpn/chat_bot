@@ -1,0 +1,24 @@
+# ambiente
+venv/
+__pycache__/
+*.pyc
+.env
+desktop.ini
+
+# segreti / credenziali di fornitore (config.leggi_credenziale li legge da qui)
+dati/GEMINI_KEY
+dati/GROQ_API
+dati/cookie.txt
+dati/sdf_username.txt
+dati/sdf_password.txt
+
+# dati di lavoro locali, non necessari al bot in produzione
+dati/estrazioni_pdf/
+dati/tessdata/
+cache/
+*.har
+pbt00135.pdf
+
+# residuo pre-fix percorso DB (vedi CLAUDE.md changelog #6): il DB SDF
+# vero vive in fornitori/sdf/sdf.db, questo in root non serve
+/sdf.db
