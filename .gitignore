@@ -19,6 +19,7 @@ cache/
 *.har
 pbt00135.pdf
 *.md
+claude.txt
 
 # residuo pre-fix percorso DB (vedi CLAUDE.md changelog #6): il DB SDF
 # vero vive in fornitori/sdf/sdf.db, questo in root non serve
