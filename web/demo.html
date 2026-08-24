@@ -4,19 +4,41 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Demo widget ricambi</title>
-  <style>
-    body{font-family:system-ui,sans-serif;margin:0;background:#F6F7F8;color:#16191C}
-    main{max-width:640px;margin:0 auto;padding:72px 24px}
-    h1{font-size:26px;margin:0 0 6px}
-    p{color:#5A666D;line-height:1.6}
-    code{background:#E7EBED;padding:2px 6px;font-size:13px}
-  </style>
+  <link rel="stylesheet" href="./widget/demo.css">
 </head>
 <body>
   <main>
-    <h1>Pagina di prova</h1>
-    <p>Questa pagina simula il sito dell'azienda. Il widget si carica in basso
-       a destra: cliccalo per aprire la chat.</p>
+    <div class="text-container">
+      <img class="logo" src="./widget/logo_pernicestore.png" alt="Pernice Store">
+
+      <h1>AGENTE 
+        <img class="ai" src="./widget/logo_ai_vettoriale.svg">
+        <span class="red">RICAMBI</span></h1>
+      <h4>Trova più velocemente i ricambi giusti per
+        trattori, macchine agricole e attrezzature.</h4>
+
+      <p>Ti aiuta a individuare il ricambio corretto partendo da
+        marca, serie, modello o matricola.
+      </p>
+
+      <ul>
+        <li>Ricerca per <strong>marca, serie e modello</strong></li>
+        <li>Supporto con <strong>matricola</strong> per scegliere la variante giusta</li>
+        <li>Aiuto nell'individuare il <strong>codice ricambio</strong></li>
+        <li>Risposte <strong>rapide e semplici</strong></li>
+      </ul>
+
+      <div class="chat-hint">
+        <svg class="chat-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M12 3C6.48 3 2 6.69 2 11.25c0 2.55 1.42 4.83 3.64 6.34-.12 1.1-.5 2.35-1.36 3.41 1.6-.16 3.06-.75 4.28-1.6 1.05.33 2.2.5 3.44.5 5.52 0 10-3.69 10-8.25S17.52 3 12 3Z"
+            stroke="#E30613" stroke-width="1.6" stroke-linejoin="round"/>
+          <circle cx="8" cy="11.5" r="1.15" fill="#E30613"/>
+          <circle cx="12" cy="11.5" r="1.15" fill="#E30613"/>
+          <circle cx="16" cy="11.5" r="1.15" fill="#E30613"/>
+        </svg>
+        <p>Scrivi nella chat il modello della macchina<br>e il pezzo che ti serve.</p>
+      </div>
+    </div>
   </main>
 
   <script src="/widget/widget.js" data-api=""></script>

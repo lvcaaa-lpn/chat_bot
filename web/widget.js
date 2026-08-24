@@ -37,7 +37,7 @@
         --r:4px;
       }
       *{box-sizing:border-box}
-
+      
       /* ---- bollino di apertura (come il tasto "torna su" del sito) ---- */
       .launcher{
         position:fixed; right:24px; bottom:24px; width:58px; height:58px;

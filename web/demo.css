@@ -1,0 +1,97 @@
+html,body{height:100%}
+body{font-family:system-ui,sans-serif;margin:0;background:#F6F7F8;color:#16191C;
+  background-image:url('./background.png');
+  background-size:cover;
+  background-position:center bottom;
+  background-repeat:no-repeat;
+  background-attachment:fixed}
+main{max-width:640px;margin:0;padding:40px 5%}
+h1{font-size:26px;margin:0 0 6px}
+p{color:#5A666D;line-height:1.6}
+code{background:#E7EBED;padding:2px 6px;font-size:13px}
+
+.text-container{
+  text-align:left;
+}
+
+.logo{
+  display:block;
+  height:200px;
+  width:auto;
+  margin-bottom:20px;
+}
+
+.text-container h1{
+  font-size:44px;
+  font-weight:800;
+  line-height:1.1;
+  margin:0 0 18px;
+  color:#16191C;
+}
+.text-container .ai {
+  height: 50px;
+  width: auto;
+  vertical-align: middle;
+  margin: 0 6px;
+}
+.red{
+  color:#E30613;
+}
+
+.text-container h4{
+  font-size:19px;
+  font-weight:700;
+  line-height:1.4;
+  margin:0 0 12px;
+  color:#16191C;
+}
+
+.text-container p{
+  font-size:16px;
+  margin:0 0 18px;
+}
+
+.text-container ul{
+  list-style:none;
+  margin:0 0 28px;
+  padding:0;
+}
+.text-container ul li{
+  position:relative;
+  padding-left:20px;
+  margin-bottom:10px;
+  font-size:15px;
+  color:#3A4247;
+}
+.text-container ul li::before{
+  content:"";
+  position:absolute;
+  left:0;
+  top:8px;
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  background:#E30613;
+}
+.text-container ul li strong{
+  font-weight:700;
+  color:#16191C;
+}
+
+.chat-hint{
+  display:flex;
+  align-items:flex-start;
+  gap:12px;
+}
+.chat-hint .chat-icon{
+  flex:0 0 auto;
+  width:26px;
+  height:26px;
+  margin-top:2px;
+}
+.chat-hint p{
+  margin:0;
+  font-style:italic;
+  color:#3A4247;
+  line-height:1.5;
+}
