@@ -8,12 +8,14 @@ corretto in uno restava nell'altro.
 """
 
 import json
+import uuid
 
 from openai import OpenAI
 import traceback
 import re, unicodedata
 
 import config
+import cronologia
 from fornitori import carica_tutti
 
 # -------------------------------------------------------------------
@@ -168,7 +170,8 @@ def _costruisci_alias(registro):
 class Conversazione:
     """Una conversazione con il proprio stato (macchina scelta, cronologia)."""
 
-    def __init__(self, registro=None):
+    def __init__(self, registro=None, sessione_id=None):
+        self.sessione_id = sessione_id or str(uuid.uuid4())
         self.registro = registro or carica_tutti()
         self.alias, self.canonica = _costruisci_alias(self.registro)
         self.messaggi = [{"role": "system", "content": SYSTEM}]
@@ -230,6 +233,7 @@ class Conversazione:
         self.tronca()
         usati = []
         self.attesa_conferma = False
+        cronologia.registra_messaggio(self.sessione_id, "cliente", testo)
 
         for _ in range(MAX_GIRI):
             try:
@@ -245,12 +249,14 @@ class Conversazione:
             self.messaggi.append(msg.model_dump(exclude_none=True))
 
             if not msg.tool_calls:
+                cronologia.registra_messaggio(self.sessione_id, "bot", msg.content or "")
                 return {"risposta": msg.content or "", "errore": False,
                         "strumenti": usati}
 
             for tc in msg.tool_calls:
                 nome = tc.function.name
                 usati.append(nome)
+                args = {}
                 try:
                     args = json.loads(tc.function.arguments or "{}")
 
@@ -323,9 +329,14 @@ class Conversazione:
                                         "Riprova una sola volta con gli stessi parametri; "
                                         "se fallisce ancora, di' che c'e' un problema "
                                         "tecnico e che serve l'intervento di un operatore.")}
+                cronologia.registra_strumento(self.sessione_id, nome, args, out)
                 self.messaggi.append({"role": "tool", "tool_call_id": tc.id,
                                         "content": json.dumps(out, ensure_ascii=False)})
 
+        cronologia.registra_messaggio(
+            self.sessione_id, "bot",
+            "Non riesco a completare la ricerca. Prova a "
+            "descrivere il pezzo in modo diverso.")
         return {"risposta": "Non riesco a completare la ricerca. Prova a "
                             "descrivere il pezzo in modo diverso.",
                 "errore": False, "strumenti": usati}

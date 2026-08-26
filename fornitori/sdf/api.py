@@ -166,7 +166,15 @@ class SdfApi:
 
     def applicabilities(self, code, family_id=None, model_id=None, group_id=None,
                         cross_brand=False, brand=None):
-        """Dove viene usato un codice. Richiede searchType=PART_REF."""
+        """Dove viene usato un codice. Richiede searchType=PART_REF.
+
+        NOTA: searchType=DESCRIPTION su questo endpoint e' stato provato
+        (per una ricerca dal vivo per descrizione, scoperta al modello) e
+        NON restituisce ricambi per descrizione come ci si aspetterebbe -
+        restituisce un elenco di famiglie di trattori, indipendentemente
+        dallo scoping. Non usarlo per cercare per descrizione: per quello
+        c'e' solo suggest_descriptions (non scoperto per modello) o il
+        crawl completo (_query sulla cache)."""
         raw = _as_list(self.c.post(
             "cric/search/searchPartApplicabilities", brand=brand,
             familyRowId=family_id, modelRowId=model_id, groupRowId=group_id,

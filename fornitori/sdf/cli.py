@@ -11,7 +11,10 @@ Uso (login automatico):
     python -m sdf.cli
 """
 import sys
+import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import config
 
 from .client import BRANDS, SdfClient, SessionExpired
@@ -37,8 +40,14 @@ Comandi disponibili
   subs <codice>       codici sostitutivi
   crawl model         scarica nel DB il modello selezionato
   crawl family        scarica nel DB tutta la famiglia selezionata
+  bench [worker] [n]  TEST: scarica n tavole del gruppo selezionato con
+                       'worker' richieste in parallelo (default 4, 20),
+                       misura tempo/errori. Non salva nel DB.
   estimate            stima il lavoro totale per la marca corrente
   stats               righe presenti nel DB
+  modelli             modelli gia' completi in locale (il bot risponde
+                       subito, senza aspettare il download)
+  incompleti          modelli con download parziale (quanto manca)
   state               mostra la selezione corrente
   help / quit
 """
@@ -59,10 +68,16 @@ def ask(prompt, options, labeler=str):
 
 
 class Cli:
-    def __init__(self, cookie, username=None, password=None, db_path="sdf.db"):
+    def __init__(self, cookie, username=None, password=None, db_path=None):
         self.client = SdfClient(cookie, username=username, password=password)
         self.api = SdfApi(self.client)
-        self.db = Db(db_path)
+        # db_path=None -> il default di Db() (fornitori/sdf/sdf.db, calcolato
+        # dalla posizione del file, vedi db.py DEFAULT_PATH): senza questo,
+        # un default relativo qui risolverebbe contro la cartella di lancio
+        # e la CLI scriverebbe su un DB diverso da quello usato dal bot
+        # (vedi CLAUDE.md changelog #6 - lo stesso bug, gia' corretto per
+        # l'adapter ma non per la CLI).
+        self.db = Db(db_path) if db_path else Db()
         self.crawler = Crawler(self.api, self.db)
         self.brand_label = "SAME"
         self.family = None
@@ -320,16 +335,74 @@ class Cli:
         if arg == "model":
             if not self.need("family", "model"):
                 return
+            t0 = time.time()
             n = self.crawler.crawl_model(self.brand, self.family["row_id"],
                                          self.model["row_id"])
-            print(f"  {n} righe ricambio salvate")
+            print(f"  {n} righe ricambio salvate in {time.time() - t0:.1f}s")
         elif arg == "family":
             if not self.need("family"):
                 return
+            t0 = time.time()
             n = self.crawler.crawl_family(self.brand, self.family["row_id"])
-            print(f"  {n} righe ricambio salvate")
+            print(f"  {n} righe ricambio salvate in {time.time() - t0:.1f}s")
         else:
             print("  uso: crawl model | crawl family")
+
+    def cmd_bench(self, arg):
+        """Confronta i tempi di download di un campione di tavole con N
+        richieste http in parallelo. Solo per capire quanto regge il
+        portale: non tocca crawler.py/adapter.py, non salva nel DB, e
+        ripristina il delay del client alla fine anche in caso di errore."""
+        if not self.need("family", "model", "group"):
+            return
+        pezzi = arg.split()
+        worker = int(pezzi[0]) if pezzi and pezzi[0].isdigit() else 4
+        campione_n = int(pezzi[1]) if len(pezzi) > 1 and pezzi[1].isdigit() else 20
+
+        idx = self.api.drawing_index(self.family["row_id"], self.model["row_id"],
+                                     self.group["row_id"], vals=self.vals)
+        seen, uniq = set(), []
+        for d in idx:
+            if d["revision_id"] not in seen:
+                seen.add(d["revision_id"])
+                uniq.append(d)
+        campione = uniq[:campione_n]
+        if not campione:
+            print("  nessuna tavola nel gruppo selezionato")
+            return
+
+        def fetch(d):
+            return self.api.drawing(self.family["row_id"], self.model["row_id"],
+                                    self.group["row_id"], d["subgroup_id"],
+                                    d["revision_id"], vals=self.vals)
+
+        # a delay=0 il rate limiting lo fa solo il portale: cosi' il test
+        # misura la concorrenza vera, non il nostro throttle artificiale
+        delay_originale = self.client.delay
+        self.client.delay = 0.0
+        errori = []
+        print(f"  bench: {len(campione)} tavole, {worker} worker paralleli...")
+        t0 = time.time()
+        try:
+            with ThreadPoolExecutor(max_workers=worker) as ex:
+                futures = {ex.submit(fetch, d): d for d in campione}
+                for fut in as_completed(futures):
+                    d = futures[fut]
+                    try:
+                        fut.result()
+                    except Exception as e:
+                        errori.append((d["name"], repr(e)))
+        finally:
+            self.client.delay = delay_originale
+
+        elapsed = time.time() - t0
+        ok = len(campione) - len(errori)
+        print(f"  {ok}/{len(campione)} ok in {elapsed:.1f}s "
+              f"({ok / elapsed:.2f} tavole/s)" if elapsed > 0 else "  istantaneo?")
+        if errori:
+            print(f"  {len(errori)} errori:")
+            for nome, err in errori[:10]:
+                print(f"    {nome}: {err}")
 
     def cmd_estimate(self, arg):
         for k, v in self.crawler.estimate(self.brand).items():
@@ -338,6 +411,54 @@ class Cli:
     def cmd_stats(self, arg):
         for k, v in self.db.stats().items():
             print(f"  {k:<16} {v}")
+
+    def _arricchisci_nomi(self, elenco):
+        """Il nome si salva in cache solo navigando con 'mod': per i modelli
+        scaricati dal bot (mai passati da li') lo recupero al volo, una
+        chiamata per famiglia non ancora vista, e lo salvo per le prossime."""
+        senza_nome = {(m["brand"], m["family_id"]) for m in elenco
+                      if not m["nome"] and m["family_id"] is not None}
+        for brand, family_id in senza_nome:
+            try:
+                mods = self.api.models(family_id, brand=brand)
+                self.db.save_models(brand, mods)
+            except Exception as e:
+                print(f"  (nomi di {brand}:{family_id} non recuperati: {e!r})")
+        return senza_nome
+
+    def cmd_modelli(self, arg):
+        """Modelli gia' completi in locale: quelli su cui il bot (o find/
+        parts qui in CLI, che leggono dal vivo) rispondono subito, senza
+        aspettare il download."""
+        pronti = self.db.modelli_pronti()
+        if not pronti:
+            print("  nessun modello ancora completo in locale")
+            return
+
+        if self._arricchisci_nomi(pronti):
+            pronti = self.db.modelli_pronti()
+
+        pronti.sort(key=lambda m: (m["brand"], m["nome"] or "", m["model_id"]))
+        for m in pronti:
+            nome = m["nome"] or f"(nome non trovato, id {m['model_id']})"
+            print(f"  {m['brand']:<12} {nome:<45} {m['n_tavole']:>4} tavole")
+
+    def cmd_incompleti(self, arg):
+        """Modelli con crawl iniziato ma non finito: quanto manca, e su
+        cosa il bot risponderebbe ancora 'sto preparando'."""
+        parziali = self.db.modelli_incompleti()
+        if not parziali:
+            print("  nessun download parziale in locale")
+            return
+
+        if self._arricchisci_nomi(parziali):
+            parziali = self.db.modelli_incompleti()
+
+        parziali.sort(key=lambda m: (m["brand"], m["nome"] or "", m["model_id"]))
+        for m in parziali:
+            nome = m["nome"] or f"(nome non trovato, id {m['model_id']})"
+            print(f"  {m['brand']:<12} {nome:<45} {m['n_tavole']:>4} tavole  "
+                  f"{m['n_gruppi_completi']:>3} gruppi completi")
 
     # ------------------------------------------------------------- loop
     def run(self):
@@ -348,8 +469,9 @@ class Cli:
             "vin": self.cmd_vin, "serial": self.cmd_serial, "engine": self.cmd_engine,
             "grp": self.cmd_grp, "sub": self.cmd_sub, "tav": self.cmd_tav,
             "parts": self.cmd_parts, "find": self.cmd_find, "where": self.cmd_where,
-            "subs": self.cmd_subs, "crawl": self.cmd_crawl,
+            "subs": self.cmd_subs, "crawl": self.cmd_crawl, "bench": self.cmd_bench,
             "estimate": self.cmd_estimate, "stats": self.cmd_stats,
+            "modelli": self.cmd_modelli, "incompleti": self.cmd_incompleti,
             "state": lambda a: self.show_state(),
             "help": lambda a: print(HELP),
         }

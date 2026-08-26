@@ -21,6 +21,11 @@ Poi in qualunque modulo:
 import logging
 import os
 import sys
+from logging.handlers import RotatingFileHandler
+
+import config
+
+CARTELLA_LOG = config.DATI / "log"
 
 
 def configura(livello=None):
@@ -33,15 +38,26 @@ def configura(livello=None):
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(fmt)
 
+    # oltre alla console: un file su disco che sopravvive a restart/reload
+    # e non scorre via nella scrollback del terminale. E' il log "tecnico"
+    # (richieste/risposte ai portali fornitore, timing, errori) - non le
+    # conversazioni con i clienti, quelle sono in cronologia.py.
+    CARTELLA_LOG.mkdir(exist_ok=True)
+    file_handler = RotatingFileHandler(
+        CARTELLA_LOG / "tecnico.log", maxBytes=5_000_000, backupCount=3,
+        encoding="utf-8")
+    file_handler.setFormatter(fmt)
+
     root = logging.getLogger()
     # evita handler duplicati quando uvicorn --reload ricarica il modulo
     for h in list(root.handlers):
         root.removeHandler(h)
     root.addHandler(handler)
+    root.addHandler(file_handler)
     root.setLevel(livello)
 
     # i nostri logger applicativi
-    for nome in ("sdf", "fornitori", "agente"):
+    for nome in ("sdf", "goldoni", "fornitori", "agente", "cronologia"):
         logging.getLogger(nome).setLevel(livello)
 
     # abbassa il rumore delle librerie

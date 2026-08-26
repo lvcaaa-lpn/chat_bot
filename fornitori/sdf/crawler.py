@@ -1,5 +1,22 @@
 """Popolamento incrementale del DB. Riprendibile dopo interruzione."""
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from .client import SessionExpired
+
+# quante tavole scaricare in parallelo dentro un gruppo. Misurato a mano col
+# comando 'bench' del CLI SDF (vedi CLAUDE.md): su un campione di 34 tavole,
+# 1 worker = 182s, 8 worker = 18.5s, 16 worker = 19.3s (nessun guadagno
+# ulteriore, il portale stesso e' il collo di bottiglia oltre questa soglia,
+# probabile sincronizzazione lato server sulla stessa sessione). 8 e' quindi
+# il punto di massimo beneficio senza sovraccaricare inutilmente il portale
+# del fornitore.
+#
+# ATTENZIONE: se il crawl parallelo dovesse dare problemi (es. il portale
+# reagisce diversamente su una marca/famiglia diversa da quella testata),
+# mettere MAX_WORKER = 1: crawl_group torna a chiamare
+# _crawl_group_sequenziale, la versione precedente lasciata intatta sotto,
+# senza dover toccare altro codice.
+MAX_WORKER = 8
 
 
 class Crawler:
@@ -15,6 +32,98 @@ class Crawler:
     # ------------------------------------------------------------------
     def crawl_group(self, brand, family_id, model_id, group_id, with_subs=True,
                     progress=None):
+        if MAX_WORKER <= 1:
+            return self._crawl_group_sequenziale(brand, family_id, model_id,
+                                                  group_id, with_subs, progress)
+
+        key = f"grp:{brand}:{model_id}:{group_id}"
+        if self.db.is_done(key):
+            return 0
+
+        index = self.api.drawing_index(family_id, model_id, group_id, brand=brand)
+
+        # dedup mantenendo l'ordine, e separo subito cio' che non richiede
+        # nessuna chiamata http (tavola gia' nota, basta il link) da cio'
+        # che va davvero scaricato in parallelo
+        seen = set()
+        da_linkare, da_scaricare = [], []
+        for meta in index:
+            rev = meta["revision_id"]
+            if rev in seen:
+                continue
+            seen.add(rev)
+            if self.db.has_drawing(rev):
+                da_linkare.append(meta)
+            else:
+                da_scaricare.append(meta)
+
+        n_tot = len(da_linkare) + len(da_scaricare)
+        n_fatte = 0
+        n_parts = 0
+
+        for meta in da_linkare:
+            rev = meta["revision_id"]
+            self.db.link_drawing(brand, family_id, model_id,
+                                 meta["group_id"], meta["subgroup_id"], rev)
+            self.log(f"[{rev}] {meta['name']} (gia' nota)", 3)
+            n_fatte += 1
+            if progress:
+                progress(tavole_fatte=n_fatte, tavole_gruppo=n_tot,
+                         etichetta=meta.get("name") or "")
+
+        def scarica(meta):
+            rev = meta["revision_id"]
+            d = self.api.drawing(family_id, model_id, group_id,
+                                 meta["subgroup_id"], rev, brand=brand)
+            return meta, d
+
+        with ThreadPoolExecutor(max_workers=MAX_WORKER) as ex:
+            futures = [ex.submit(scarica, meta) for meta in da_scaricare]
+            for fut in as_completed(futures):
+                meta, d = fut.result()
+                rev = meta["revision_id"]
+                if d["got_revision"] != rev:
+                    self.log(f"[{rev}] ATTENZIONE: ricevuta {d['got_revision']}", 3)
+
+                self.db.save_drawing(d["meta"] if d["meta"]["revision_id"] else meta,
+                                     d["parts"], d["hotspots"], brand, family_id, model_id)
+                n_parts += len(d["parts"])
+                self.log(f"[{rev}] {meta['name']} -> {len(d['parts'])} ricambi", 3)
+
+                if with_subs:
+                    for p in d["parts"]:
+                        if p["replaced"] and not self.db.sub_checked(p["code"]):
+                            # una singola sostituzione lenta/irraggiungibile non
+                            # deve buttare via tutto il gruppo (mark_done non
+                            # verrebbe mai chiamato, e il gruppo ripartirebbe
+                            # da capo ad ogni tentativo, ritentando la stessa
+                            # chiamata problematica in loop). Le sostituzioni
+                            # sono un arricchimento, non essenziali quanto le
+                            # tavole/ricambi stessi.
+                            try:
+                                subs = self.api.substitutions(p["code"], brand=brand)
+                                self.db.save_substitutions(p["code"], subs)
+                                if subs:
+                                    self.log(f"{p['code']} -> " +
+                                             ", ".join(s["code"] for s in subs), 4)
+                            except SessionExpired:
+                                raise
+                            except Exception as e:
+                                self.log(f"[{p['code']}] sostituzioni non "
+                                        f"recuperate: {e!r}", 4)
+
+                n_fatte += 1
+                if progress:
+                    progress(tavole_fatte=n_fatte, tavole_gruppo=n_tot,
+                             etichetta=meta.get("name") or "")
+
+        self.db.mark_done(key)
+        return n_parts
+
+    def _crawl_group_sequenziale(self, brand, family_id, model_id, group_id,
+                                 with_subs=True, progress=None):
+        """Versione precedente, una tavola alla volta. Tenuta come fallback:
+        vedi MAX_WORKER sopra per come riattivarla."""
         key = f"grp:{brand}:{model_id}:{group_id}"
         if self.db.is_done(key):
             return 0
@@ -53,11 +162,17 @@ class Crawler:
             if with_subs:
                 for p in d["parts"]:
                     if p["replaced"] and not self.db.sub_checked(p["code"]):
-                        subs = self.api.substitutions(p["code"], brand=brand)
-                        self.db.save_substitutions(p["code"], subs)
-                        if subs:
-                            self.log(f"{p['code']} -> " +
-                                     ", ".join(s["code"] for s in subs), 4)
+                        try:
+                            subs = self.api.substitutions(p["code"], brand=brand)
+                            self.db.save_substitutions(p["code"], subs)
+                            if subs:
+                                self.log(f"{p['code']} -> " +
+                                         ", ".join(s["code"] for s in subs), 4)
+                        except SessionExpired:
+                            raise
+                        except Exception as e:
+                            self.log(f"[{p['code']}] sostituzioni non "
+                                    f"recuperate: {e!r}", 4)
 
         self.db.mark_done(key)
         return n_parts

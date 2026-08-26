@@ -158,7 +158,7 @@ def conversazione(sid):
     pulisci()
     if sid not in SESSIONI:
         registro = carica_tutti()
-        SESSIONI[sid] = {"conv": Conversazione(registro),
+        SESSIONI[sid] = {"conv": Conversazione(registro, sessione_id=sid),
                          "registro": registro,
                          "ultimo": time.time()}
     SESSIONI[sid]["ultimo"] = time.time()

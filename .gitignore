@@ -16,6 +16,10 @@ dati/sdf_password.txt
 dati/estrazioni_pdf/
 dati/tessdata/
 cache/
+
+# log tecnico e cronologia conversazioni (dati clienti, mai committati)
+dati/log/
+dati/conversazioni.db
 *.har
 pbt00135.pdf
 *.md

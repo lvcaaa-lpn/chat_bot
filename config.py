@@ -43,6 +43,14 @@ def leggi_credenziale(nome_file, variabile_ambiente):
             v = percorso.read_text(encoding="utf-8").strip()
     return v
 
+
+def scrivi_credenziale(nome_file, valore):
+    """Salva in dati/ una credenziale ottenuta a runtime (es. il cookie di
+    un login automatico), cosi' il prossimo avvio la riusa invece di
+    rifare il login da capo. Stesso principio di leggi_credenziale:
+    generico, ogni fornitore passa il proprio nome file."""
+    (DATI / nome_file).write_text(valore, encoding="utf-8")
+
 # --- server web ------------------------------------------------------
 # In produzione elencare i domini reali del sito dell'azienda.
 ORIGINI_CONSENTITE = os.environ.get(

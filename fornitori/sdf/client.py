@@ -2,10 +2,13 @@
 import json
 import logging
 import os
+import threading
 import time
 from urllib.parse import urljoin
 
 import requests
+
+import config
 
 try:
     from bs4 import BeautifulSoup
@@ -189,6 +192,7 @@ class SdfClient:
         if not self.cookie:
             if self.username and self.password:
                 self.cookie = login_automatico(self.username, self.password)
+                self._salva_cookie()
             else:
                 raise ValueError(
                     "Credenziali SDF mancanti. Imposta SDF_COOKIE (login manuale, "
@@ -200,6 +204,8 @@ class SdfClient:
         self.lang = lang
         self.delay = delay
         self._last = 0.0
+        self._throttle_lk = threading.Lock()
+        self._sessione_lk = threading.Lock()
         self.s = requests.Session()
         self.s.headers.update({
             "Cookie": self.cookie,
@@ -213,10 +219,15 @@ class SdfClient:
         return self.brand
 
     def _throttle(self):
-        wait = self.delay - (time.time() - self._last)
-        if wait > 0:
-            time.sleep(wait)
-        self._last = time.time()
+        # con piu' thread concorrenti, lettura+scrittura di _last deve
+        # essere atomica: altrimenti due thread possono leggere lo stesso
+        # _last, dormire in parallelo e violare il delay minimo tra
+        # richieste effettive al portale
+        with self._throttle_lk:
+            wait = self.delay - (time.time() - self._last)
+            if wait > 0:
+                time.sleep(wait)
+            self._last = time.time()
 
     def _handle(self, r):
         if r.status_code in (401, 403):
@@ -232,45 +243,82 @@ class SdfClient:
         except json.JSONDecodeError:
             return None
 
-    def _rinnova_sessione(self):
+    def _rinnova_sessione(self, cookie_prima=None):
         """Chiamato quando il cookie corrente non e' piu' valido. Se abbiamo
         username/password, rifa' il login automatico e aggiorna il cookie
-        in uso; altrimenti propaga l'errore (serve un nuovo cookie manuale)."""
+        in uso; altrimenti propaga l'errore (serve un nuovo cookie manuale).
+
+        'cookie_prima' e' il cookie che il chiamante stava usando quando ha
+        preso il 401: con piu' thread paralleli, se la sessione scade una
+        volta tutti i thread in volo lo scoprono quasi insieme. Senza
+        coordinamento ognuno rifarebbe un login automatico per conto suo
+        e, se il portale ammette una sola sessione attiva per utente, ogni
+        nuovo login invaliderebbe quello appena ottenuto da un altro thread
+        (osservato: valanga di "sessione scaduta" in loop finche' non si
+        esauriscono i retry). Con il lock, solo il primo thread che arriva
+        rifa' davvero il login; gli altri, trovando che self.cookie e'
+        gia' cambiato rispetto a quello con cui hanno fallito, riusano
+        quello nuovo invece di rilogarsi a loro volta."""
         if not (self.username and self.password):
             raise SessionExpired(
                 "Sessione SDF scaduta e nessuna credenziale per il login "
                 "automatico: aggiorna SDF_COOKIE / dati/cookie.txt a mano.")
-        log.warning("SDF: sessione scaduta, rifaccio il login automatico")
-        self.cookie = login_automatico(self.username, self.password)
-        self.s.headers["Cookie"] = self.cookie
+        with self._sessione_lk:
+            if cookie_prima is not None and self.cookie != cookie_prima:
+                log.info("SDF: sessione gia' rinnovata da un altro thread, riuso quella")
+                return
+            log.warning("SDF: sessione scaduta, rifaccio il login automatico")
+            self.cookie = login_automatico(self.username, self.password)
+            self.s.headers["Cookie"] = self.cookie
+            self._salva_cookie()
+
+    def _salva_cookie(self):
+        """Persiste il cookie appena ottenuto in dati/cookie.txt, cosi' il
+        prossimo avvio del processo lo riusa (SdfClient da' sempre priorita'
+        al cookie salvato, vedi __init__) invece di rifare il login ad ogni
+        riavvio. Se scade nel frattempo, il meccanismo di rinnovo su 401
+        (_rinnova_sessione) lo rifa' automaticamente e lo salva di nuovo."""
+        try:
+            config.scrivi_credenziale("cookie.txt", self.cookie)
+        except Exception:
+            log.exception("SDF: impossibile salvare il cookie su disco")
 
     def get(self, path, brand=None, retries=2, **params):
         try:
             return self._get(path, brand, retries, **params)
         except SessionExpired:
-            self._rinnova_sessione()
+            self._rinnova_sessione(self.cookie)
             return self._get(path, brand, retries, **params)
 
     def post(self, path, brand=None, retries=2, **body):
         try:
             return self._post(path, brand, retries, **body)
         except SessionExpired:
-            self._rinnova_sessione()
+            self._rinnova_sessione(self.cookie)
             return self._post(path, brand, retries, **body)
 
     def _get(self, path, brand, retries, **params):
         for attempt in range(retries + 1):
             self._throttle()
+            t0 = time.time()
             try:
                 r = self.s.get(
                     BASE + path,
                     params={"brand": brand or self.brand, "lang": self.lang, **params},
                     timeout=30,
                 )
-                return self._handle(r)
+                out = self._handle(r)
+                log.debug("GET %s brand=%s tentativo=%d %dms",
+                         path, brand or self.brand, attempt, (time.time() - t0) * 1000)
+                return out
             except SessionExpired:
+                log.debug("GET %s brand=%s tentativo=%d %dms -> sessione scaduta",
+                         path, brand or self.brand, attempt, (time.time() - t0) * 1000)
                 raise
-            except (requests.Timeout, requests.ConnectionError):
+            except (requests.Timeout, requests.ConnectionError) as e:
+                log.debug("GET %s brand=%s tentativo=%d %dms -> %s",
+                         path, brand or self.brand, attempt, (time.time() - t0) * 1000,
+                         type(e).__name__)
                 if attempt == retries:
                     raise
                 time.sleep(2 ** attempt)
@@ -278,16 +326,25 @@ class SdfClient:
     def _post(self, path, brand, retries, **body):
         for attempt in range(retries + 1):
             self._throttle()
+            t0 = time.time()
             try:
                 r = self.s.post(
                     BASE + path,
                     json={"brand": brand or self.brand, "lang": self.lang, **body},
                     timeout=30,
                 )
-                return self._handle(r)
+                out = self._handle(r)
+                log.debug("POST %s brand=%s tentativo=%d %dms",
+                         path, brand or self.brand, attempt, (time.time() - t0) * 1000)
+                return out
             except SessionExpired:
+                log.debug("POST %s brand=%s tentativo=%d %dms -> sessione scaduta",
+                         path, brand or self.brand, attempt, (time.time() - t0) * 1000)
                 raise
-            except (requests.Timeout, requests.ConnectionError):
+            except (requests.Timeout, requests.ConnectionError) as e:
+                log.debug("POST %s brand=%s tentativo=%d %dms -> %s",
+                         path, brand or self.brand, attempt, (time.time() - t0) * 1000,
+                         type(e).__name__)
                 if attempt == retries:
                     raise
                 time.sleep(2 ** attempt)

@@ -221,3 +221,60 @@ class Db:
         return {t: self.one(f"SELECT COUNT(*) AS n FROM {t}")["n"]
                 for t in ("family", "model", "grp", "subgroup", "drawing",
                           "model_drawing", "part", "substitution")}
+
+    def modelli_pronti(self):
+        """Modelli il cui download e' completo (crawl_state 'mod:...'):
+        quelli su cui il bot risponde subito, senza aspettare il crawl."""
+        chiavi = self.query("SELECT key FROM crawl_state WHERE key LIKE 'mod:%'")
+        out = []
+        for r in chiavi:
+            try:
+                _, brand, model_id = r["key"].split(":")
+                model_id = int(model_id)
+            except ValueError:
+                continue
+            fam = self.one(
+                "SELECT DISTINCT family_id FROM model_drawing WHERE brand=? AND model_id=?",
+                (brand, model_id))
+            nome = self.one("SELECT name FROM model WHERE brand=? AND row_id=?",
+                            (brand, model_id))
+            n_tavole = self.one(
+                "SELECT COUNT(DISTINCT revision_id) AS n FROM model_drawing "
+                "WHERE brand=? AND model_id=?", (brand, model_id))
+            out.append({
+                "brand": brand, "model_id": model_id,
+                "family_id": fam["family_id"] if fam else None,
+                "nome": nome["name"] if nome else None,
+                "n_tavole": n_tavole["n"] if n_tavole else 0,
+            })
+        return out
+
+    def modelli_incompleti(self):
+        """Modelli con dati parziali in locale: crawl iniziato (in corso o
+        interrotto) ma non finito. Non si perde nulla riprendendolo: le
+        tavole gia' qui non si riscaricano (vedi Crawler.crawl_group)."""
+        modelli = self.query(
+            "SELECT DISTINCT brand, model_id, family_id FROM model_drawing")
+        completi = {r["key"] for r in
+                   self.query("SELECT key FROM crawl_state WHERE key LIKE 'mod:%'")}
+        out = []
+        for r in modelli:
+            key = f"mod:{r['brand']}:{r['model_id']}"
+            if key in completi:
+                continue
+            n_tavole = self.one(
+                "SELECT COUNT(DISTINCT revision_id) AS n FROM model_drawing "
+                "WHERE brand=? AND model_id=?", (r["brand"], r["model_id"]))
+            n_gruppi = self.one(
+                "SELECT COUNT(*) AS n FROM crawl_state WHERE key LIKE ?",
+                (f"grp:{r['brand']}:{r['model_id']}:%",))
+            nome = self.one("SELECT name FROM model WHERE brand=? AND row_id=?",
+                            (r["brand"], r["model_id"]))
+            out.append({
+                "brand": r["brand"], "model_id": r["model_id"],
+                "family_id": r["family_id"],
+                "nome": nome["name"] if nome else None,
+                "n_tavole": n_tavole["n"] if n_tavole else 0,
+                "n_gruppi_completi": n_gruppi["n"] if n_gruppi else 0,
+            })
+        return out

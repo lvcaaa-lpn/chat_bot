@@ -12,6 +12,7 @@ viene analizzata. Cosi' funziona anche se cataloghi diversi hanno
 strutture di navigazione differenti.
 """
 
+import logging
 import time
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
@@ -21,6 +22,8 @@ import requests
 from .parser import (BASE, parse_indice_cataloghi, parse_indice_gruppi,
                      parse_tavole, e_pagina_tavola)
 from . import db
+
+log = logging.getLogger("goldoni.client")
 
 DELAY = 1.0          # pausa fra le richieste: e' un sito altrui
 TIMEOUT = 20
@@ -43,8 +46,10 @@ class GoldoniClient:
         attesa = self.delay - (time.time() - self._ultimo)
         if attesa > 0:
             time.sleep(attesa)
+        t0 = time.time()
         r = self.s.get(url, timeout=TIMEOUT)
         self._ultimo = time.time()
+        log.debug("GET %s %dms", url, (self._ultimo - t0) * 1000)
         r.raise_for_status()
         # le pagine sono in latin-1: senza questo le accentate si rompono
         if not r.encoding or r.encoding.lower() == "iso-8859-1":
