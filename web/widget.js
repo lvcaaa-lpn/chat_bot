@@ -109,6 +109,8 @@
       .bubble li::marker{color:var(--red)}
       .bubble a{color:var(--red); text-decoration:underline; text-underline-offset:2px}
       .bubble a:hover{color:var(--ink)}
+      .bubble p.titolo{margin:14px 0 6px; font-family:var(--disp); font-weight:600}
+      .bubble hr{border:none; border-top:1px solid var(--line); margin:12px 0}
       .esplosi{display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:10px}
       .esplosi a{display:block; border:1px solid var(--line); border-radius:var(--r); background:#fff; overflow:hidden}
       .esplosi img{width:100%; height:74px; object-fit:contain; display:block}
@@ -239,6 +241,8 @@
   const RE_ELENCO = /^\s*[-*+•]\s+(.*)$/;
   const RE_LINK = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
   const RE_NUMERO = /^\s*(\d{1,2})[.)]\s+(.*)$/;
+  const RE_TITOLO = /^\s*#{1,6}\s+(.*)$/;
+  const RE_LINEA = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/;
 
   // --- //
   function aggiornaCodici(codici) {
@@ -331,6 +335,22 @@
 
     righe.forEach((riga) => {
       if (!riga.trim()) { blocco = null; tipo = null; return; }
+
+      if (RE_LINEA.test(riga)) {
+        frag.append(document.createElement("hr"));
+        blocco = null; tipo = null;
+        return;
+      }
+
+      const tit = riga.match(RE_TITOLO);
+      if (tit) {
+        const p = document.createElement("p");
+        p.className = "titolo";
+        inserisciRiga(p, tit[1]);
+        frag.append(p);
+        blocco = null; tipo = null;
+        return;
+      }
 
       const punt = riga.match(RE_ELENCO);
       const num = punt ? null : riga.match(RE_NUMERO);

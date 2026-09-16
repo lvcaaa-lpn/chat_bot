@@ -19,8 +19,12 @@ cache/
 
 # log tecnico e cronologia conversazioni (dati clienti, mai committati)
 dati/log/
-dati/conversazioni.db
+dati/conversazioni*.db
 *.har
+
+# file di giornale SQLite (WAL mode): transitori, mai committati
+*.db-shm
+*.db-wal
 pbt00135.pdf
 *.md
 claude.txt
@@ -28,3 +32,11 @@ claude.txt
 # residuo pre-fix percorso DB (vedi CLAUDE.md changelog #6): il DB SDF
 # vero vive in fornitori/sdf/sdf.db, questo in root non serve
 /sdf.db
+
+# materiale di analisi locale (glossario sinonimi grezzo, script una tantum
+# di verifica catalogo): utile solo qui, non serve al bot ne' all'azienda
+/sinonimi_rivisti.xlsx
+/debug/sinonimi_da_rivedere.csv
+/debug/termini_precisi.txt
+/debug/termini_verificati.csv
+/debug/verifica_termini_catalogo.py

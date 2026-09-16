@@ -11,6 +11,7 @@ import pkgutil
 from pathlib import Path
 
 from .base import Fornitore
+from .testo import correggi_termine
 
 __all__ = ["Fornitore", "Registro", "carica_tutti"]
 
@@ -134,7 +135,7 @@ class Registro:
                                               matricola=matricola)
     """
     def cerca_ricambio(self, marca, testo, modello=None, matricola=None, **extra):
-        ris = self.get(marca).cerca_ricambio(testo, modello=modello,
+        ris = self.get(marca).cerca_ricambio(correggi_termine(testo), modello=modello,
                                             matricola=matricola)
         self.codici_visti.update(
             a["codice"]

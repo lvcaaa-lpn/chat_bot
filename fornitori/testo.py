@@ -23,10 +23,11 @@ Due trasformazioni, entrambe volutamente grossolane:
    "idraulico"/"idràulico", "però"/"pero": si riducono alla forma senza
    segni diacritici prima del confronto.
 """
-
 import re
 import unicodedata
 from difflib import SequenceMatcher
+import csv
+import config
 
 VOCALI = "aeiou"
 LUNGHEZZA_MINIMA = 4        # sotto questa soglia la parola resta intatta
@@ -41,6 +42,8 @@ FERMA = {
     # forme elise: "dell'olio" viene spezzato dall'apostrofo in dell + olio
     "dell", "all", "nell", "sull", "dall", "quell", "l", "un", "d", "c",
 }
+
+_SINONIMI = None
 
 
 def senza_accenti(testo):
@@ -116,3 +119,40 @@ def piu_simili(query, candidati, soglia=0.72, massimo=5, chiave=None):
     valutati = [(c, p) for c, p in valutati if p >= soglia]
     valutati.sort(key=lambda cp: -cp[1])
     return [c for c, _ in valutati[:massimo]]
+
+def _carica_sinonimi():
+    global _SINONIMI
+    if _SINONIMI is not None:
+        return _SINONIMI
+    path = config.DATI / "sinonimi.csv"
+    coppie = []
+
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        sinonimi = csv.reader(f, delimiter=';')
+        next(sinonimi)
+        for riga in sinonimi:
+            corretto, impropri = riga[0], riga[1]
+
+            for improprio in impropri.split(";"):
+                coppie.append((improprio.strip(), corretto.strip()))
+
+    _SINONIMI = coppie
+    return _SINONIMI
+
+def correggi_termine(query):
+    coppie = _carica_sinonimi()
+    query_norm = senza_accenti(query).lower().strip()
+
+    # TODO fase 1: match diretto — confronta query_norm con senza_accenti(improprio).lower()
+    #   per ogni (improprio, preciso) in coppie; se uguali, return preciso
+    for (improprio, corretto) in coppie:
+        if query_norm == senza_accenti(improprio).lower():
+            return corretto
+
+    # TODO fase 2: fallback fuzzy con piu_simili(...)
+    #   ricordati chiave=lambda c: c[0]  (confronta solo il termine improprio della coppia)
+    #   se piu_simili restituisce qualcosa, prendi il primo risultato -> [0][1] e' il termine preciso
+    ris = piu_simili(query, coppie, chiave=lambda c: c[0])
+    if ris: return ris[0][1]
+
+    return query  # nessun match: query originale, invariata
