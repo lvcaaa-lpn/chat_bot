@@ -40,3 +40,8 @@ claude.txt
 /debug/termini_precisi.txt
 /debug/termini_verificati.csv
 /debug/verifica_termini_catalogo.py
+
+# cataloghi locali: ogni postazione (io/azienda) lavora sulla propria
+# copia, troppo grandi e troppo divergenti per stare nel repo
+dati/goldoni.db
+fornitori/sdf/sdf.db
