@@ -135,8 +135,21 @@ class Registro:
                                               matricola=matricola)
     """
     def cerca_ricambio(self, marca, testo, modello=None, matricola=None, **extra):
-        ris = self.get(marca).cerca_ricambio(correggi_termine(testo), modello=modello,
-                                            matricola=matricola)
+        fornitore = self.get(marca)
+        ris = fornitore.cerca_ricambio(testo, modello=modello, matricola=matricola)
+        # Il glossario NON sostituisce mai la query del cliente: se la
+        # ricerca letterale non trova nulla, si limita a segnalare al
+        # modello un possibile termine corretto ("suggerimento_glossario"),
+        # che il modello e' libero di riprovare con una sua chiamata
+        # esplicita a cerca_ricambio nello stesso turno (o di ignorare, se
+        # non ha senso nel contesto) - mai una riscrittura silenziosa della
+        # ricerca, che nasconderebbe al modello e al log cosa e' stato
+        # davvero cercato.
+        if not ris.get("blocchi") and not ris.get("errore") \
+                and not ris.get("in_preparazione"):
+            corretto = correggi_termine(testo)
+            if corretto != testo:
+                ris = {**ris, "suggerimento_glossario": corretto}
         self.codici_visti.update(
             a["codice"]
             for b in ris.get("blocchi", [])

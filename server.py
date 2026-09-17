@@ -83,7 +83,9 @@ def _flusso(sid, sess, messaggio):
     conv, registro = sess["conv"], sess["registro"]
     registro.codici_visti.clear()
  
-    log = (lambda n, a: print(f"  [{sid[:6]}] {n}({a})")) if config.DEBUG else None
+    log = (lambda n, a, e=None: print(
+        f"  [{sid[:6]}] {n}({a})" if e is None else f"  [{sid[:6]}] {n} -> {e}"
+    )) if config.DEBUG else None
  
     yield _evento("stato", testo="Sto cercando", percentuale=0)
  
@@ -178,7 +180,9 @@ def chat(req: Richiesta):
 
     registro.codici_visti.clear()      # solo i codici di questo turno
 
-    log = (lambda n, a: print(f"  [{sid[:6]}] {n}({a})")) if config.DEBUG else None
+    log = (lambda n, a, e=None: print(
+        f"  [{sid[:6]}] {n}({a})" if e is None else f"  [{sid[:6]}] {n} -> {e}"
+    )) if config.DEBUG else None
     esito = conv.turno(llm, MODELLO, req.messaggio, su_strumento=log)
 
     risposta = {"sessione": sid, "risposta": esito["risposta"],

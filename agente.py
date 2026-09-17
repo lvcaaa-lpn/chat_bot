@@ -62,14 +62,28 @@ TOOLS = [
     {"type": "function", "function": {
         "name": "cerca_ricambio",
         "description": ("Cerca un ricambio nel catalogo della macchina gia' "
-                        "individuata. Usa termini del catalogo, italiano e "
-                        "singolare: 'tubo mandata', 'filtro olio', 'cofano'. "
-                        "Passa sempre la matricola se il cliente l'ha fornita."),
+                        "individuata con trova_macchina/scegli_macchina in "
+                        "questa conversazione. Usa termini del catalogo, "
+                        "italiano e singolare: 'tubo mandata', 'filtro olio', "
+                        "'cofano'. Passa sempre la matricola se il cliente "
+                        "l'ha fornita: qui serve solo a restringere i "
+                        "risultati alla versione giusta (validita' tavola), "
+                        "NON identifica o cambia la macchina attiva. Se il "
+                        "cliente sta parlando di una macchina diversa da "
+                        "quella gia' individuata (matricola o modello "
+                        "diverso), NON provare a impostarla qui: richiama "
+                        "prima trova_macchina con la nuova matricola/modello."),
         "parameters": {"type": "object", "properties": {
             "marca": {"type": "string"},
             "testo": {"type": "string"},
-            "modello": {"type": "string"},
-            "matricola": {"type": "string"},
+            "modello": {"type": "string",
+                        "description": "Solo per riferimento/log: non seleziona la macchina."},
+            "matricola": {"type": "string",
+                        "description": ("Della macchina GIA' individuata, per "
+                                        "filtrare i risultati sulla versione "
+                                        "giusta. Non usarla per identificarne "
+                                        "una diversa: per quello serve "
+                                        "trova_macchina.")},
         }, "required": ["marca", "testo"]}}},
 ]
 
@@ -129,6 +143,15 @@ SE IL CLIENTE USA UN TERMINE IMPRECISO, DIALETTALE O SBAGLIATO
   pezzo non esiste: chiedi al cliente di descriverlo (a cosa serve, dove
   si trova sulla macchina, a cosa e' collegato, che forma o colore ha) e
   usa la descrizione per tentare una nuova ricerca con termini diversi.
+- Se cerca_ricambio non trova nulla e la risposta contiene
+  "suggerimento_glossario", e' un termine tecnico che l'azienda ha gia'
+  approvato come corrispondente a quello che hai cercato (es. cerchi
+  "ugello iniezione", suggerimento "iniettore"). Valutalo con la tua
+  conoscenza meccanica: se ha senso nel contesto della richiesta, prova
+  subito una nuova cerca_ricambio con quel termine, nello stesso turno,
+  senza aspettare che il cliente te lo richieda di nuovo - e dichiara
+  comunque l'interpretazione fatta, come sopra. Se non ha senso (il
+  cliente stava chiaramente parlando d'altro), ignora il suggerimento.
 
 SE IL CLIENTE CHIEDE PIU' PEZZI INSIEME NELLA STESSA FRASE
 - Es. "mi serve l'albero primario con il cuscinetto e il paraolio": sono
@@ -164,6 +187,10 @@ RE_NUOVA_MACCHINA = re.compile(
     r"passiamo a(?:d)? un'?altra?|passiamo al(?:la)? (?:macchina|trattore))\b", re.I)
 
 
+def _norma_matricola(m):
+    return re.sub(r"[\s\-_.]", "", str(m or "")).upper() or None
+
+
 def _norm(s):
     s = unicodedata.normalize("NFKD", (s or "").lower())
     s = "".join(c for c in s if not unicodedata.combining(c))
@@ -195,6 +222,8 @@ class Conversazione:
         self.messaggi = [{"role": "system", "content": SYSTEM}]
         self.ultimo_utente = ""
         self.marca_confermata = None
+        self.matricola_confermata = None
+        self.modello_confermato = None
         self.attesa_conferma = False
         self.dispatch = {
             "elenca_marche": self.registro.elenca,
@@ -222,6 +251,63 @@ class Conversazione:
         return any(a in parole if " " not in a else a in testo
                    for a in self.alias.get(_norm(marca), []))
 
+    def _parole_modello(self, nome):
+        """Parole distintive di un nome macchina, escluse quelle di marca
+        (compaiono in ogni nome della stessa marca, non aiutano a
+        distinguere un modello da un altro)."""
+        marche = {a for lista in self.alias.values() for a in lista}
+        return {p for p in _norm(nome).split() if len(p) >= 2 and p not in marche}
+
+    def _macchina_cambiata(self, args):
+        """
+        True se cerca_ricambio arriva con una matricola o un modello che
+        non corrispondono alla macchina attiva - segno che il cliente sta
+        parlando di un'altra macchina ma il modello non ha richiamato
+        trova_macchina per identificarla (i parametri modello/matricola di
+        cerca_ricambio non selezionano la macchina, vedi TOOLS): senza
+        questo controllo la ricerca continuerebbe sulla macchina
+        precedente, restituendo ricambi sbagliati spacciati per quelli
+        giusti (visto in produzione: matricola Argon 65 rimasta attiva
+        mentre il cliente chiedeva un pezzo per un Krypton 115).
+
+        Due controlli distinti, perche' il cliente puo' dare la matricola
+        o solo il nome del modello:
+        - matricola: confronto esatto (dopo normalizzazione formato).
+        - modello: per parole, non esatto, perche' lo stesso modello puo'
+          essere scritto in modi leggermente diversi da un turno all'altro
+          ("Argon 65 F" vs "argon 65"). Due varianti:
+          (a) nessuna parola distintiva in comune ("argon 65" vs
+              "krypton 115": famiglie diverse, zero parole condivise);
+          (b) STESSA famiglia ma numero diverso ("argon 65" vs "argon
+              70": condividono "argon", ma i numeri - quasi sempre la
+              cilindrata/potenza, l'unica cosa che davvero distingue due
+              modelli della stessa famiglia - non hanno nulla in comune.
+              Un confronto solo per parole non lo vedrebbe (condividono
+              "argon"), quindi i numeri si controllano a parte.
+          Se manca l'uno o l'altro dato (modello non specificato, o
+          macchina attiva non ancora nota) non si blocca: meglio un
+          mancato blocco che un falso allarme che costringe a richiedere
+          dati gia' dati.
+        """
+        nuova_matricola = _norma_matricola(args.get("matricola"))
+        if (nuova_matricola and self.matricola_confermata
+                and nuova_matricola != self.matricola_confermata):
+            return True
+
+        nuovo_modello = args.get("modello")
+        if nuovo_modello and self.modello_confermato:
+            parole_nuove = self._parole_modello(nuovo_modello)
+            parole_attive = self._parole_modello(self.modello_confermato)
+            if parole_nuove and parole_attive:
+                if not (parole_nuove & parole_attive):
+                    return True
+                numeri_nuovi = {p for p in parole_nuove if p.isdigit()}
+                numeri_attivi = {p for p in parole_attive if p.isdigit()}
+                if numeri_nuovi and numeri_attivi and not (numeri_nuovi & numeri_attivi):
+                    return True
+
+        return False
+
     def tronca(self, massimo=40):
         """
         Le conversazioni lunghe costano: tengo il prompt e la coda.
@@ -244,7 +330,14 @@ class Conversazione:
         """
         Elabora un messaggio dell'utente e restituisce:
             {"risposta": str, "errore": bool, "strumenti": [...]}
-        su_strumento: callback opzionale (nome, argomenti) per il debug.
+        su_strumento: callback opzionale (nome, argomenti, esito) per il
+            debug - chiamata due volte per ogni tool: prima della chiamata
+            con esito=None (per vedere che e' partita, utile per quelle
+            lente come il primo cerca_ricambio su un catalogo da scaricare),
+            poi di nuovo con l'esito effettivo. L'esito di cerca_ricambio
+            include "macchina": e' il modo per verificare a log quale
+            macchina ha davvero usato la ricerca, non quella che il
+            messaggio del cliente lasciava intendere.
         """
         self.ultimo_utente = testo
         self.messaggi.append({"role": "user", "content": testo})
@@ -290,9 +383,11 @@ class Conversazione:
                         cit = args.pop("citazione_marca", None)
                         testo_turno = self.ultimo_utente
 
-                        # cambio macchina: la marca precedente non vale piu'
+                        # cambio macchina: marca, matricola e modello precedenti non valgono piu'
                         if RE_NUOVA_MACCHINA.search(testo_turno or ""):
                             self.marca_confermata = None
+                            self.matricola_confermata = None
+                            self.modello_confermato = None
 
                         if marca_grezza:
                             if canonica is None:
@@ -308,7 +403,7 @@ class Conversazione:
                         args["marca_certa"] = bool(args.get("marca"))
 
                     if su_strumento:
-                        su_strumento(nome, args)
+                        su_strumento(nome, args, None)
 
                     # trova_macchina puo' segnalare che l'identificazione non
                     # e' certa (piu' candidate, richiede_conferma). Il modello
@@ -330,6 +425,23 @@ class Conversazione:
                                    "gia' fornito in questo messaggio (marca o "
                                    "modello inclusi): usa quelli, chiedi solo cio' "
                                    "che manca per scegliere tra le alternative.")}
+                    elif nome == "cerca_ricambio" and self._macchina_cambiata(args):
+                        self.matricola_confermata = None
+                        self.modello_confermato = None
+                        out = {"bloccato": True,
+                               "istruzione": (
+                                   "La matricola o il modello in questa "
+                                   "richiesta non corrispondono alla macchina "
+                                   "attiva: il cliente sta parlando di un'altra "
+                                   "macchina, ma modello/matricola qui in "
+                                   "cerca_ricambio NON la cambiano (servono solo "
+                                   "a filtrare risultati sulla macchina gia' "
+                                   "impostata). Richiama trova_macchina (ed "
+                                   "eventualmente scegli_macchina) con la nuova "
+                                   "matricola o modello prima di cercare il "
+                                   "ricambio. Non richiedere di nuovo dati che il "
+                                   "cliente ha gia' dato in questo messaggio "
+                                   "(marca inclusa se gia' nota).")}
                     else:
                         out = self.dispatch[nome](**args)
 
@@ -337,6 +449,12 @@ class Conversazione:
                         self.attesa_conferma = bool(
                             out.get("richiede_conferma") or out.get("piu_marche")
                             or (out.get("candidate") and not out.get("selezionata")))
+                        if out.get("selezionata"):
+                            self.modello_confermato = out["selezionata"]
+                            if args.get("matricola"):
+                                self.matricola_confermata = _norma_matricola(args["matricola"])
+                    elif nome == "scegli_macchina" and out.get("selezionata"):
+                        self.modello_confermato = out["selezionata"]
                 except Exception as e:
                     traceback.print_exc()
                     out = {"errore_di_sistema": True,
@@ -347,6 +465,8 @@ class Conversazione:
                                         "Riprova una sola volta con gli stessi parametri; "
                                         "se fallisce ancora, di' che c'e' un problema "
                                         "tecnico e che serve l'intervento di un operatore.")}
+                if su_strumento:
+                    su_strumento(nome, args, out)
                 cronologia.registra_strumento(self.sessione_id, nome, args, out)
                 self.messaggi.append({"role": "tool", "tool_call_id": tc.id,
                                         "content": json.dumps(out, ensure_ascii=False)})

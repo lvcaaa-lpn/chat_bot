@@ -149,10 +149,12 @@ def correggi_termine(query):
         if query_norm == senza_accenti(improprio).lower():
             return corretto
 
-    # TODO fase 2: fallback fuzzy con piu_simili(...)
-    #   ricordati chiave=lambda c: c[0]  (confronta solo il termine improprio della coppia)
-    #   se piu_simili restituisce qualcosa, prendi il primo risultato -> [0][1] e' il termine preciso
-    ris = piu_simili(query, coppie, chiave=lambda c: c[0])
+    # Fallback fuzzy: soglia alta (non i 0.72 usati per i refusi sui nomi
+    # macchina) perche' qui confrontiamo parole intere di significato
+    # diverso, non variazioni di battitura dello stesso nome - con 0.72
+    # "acceleratore" risultava piu' simile a "accumulatore" (0.75) che a
+    # se stesso, e veniva silenziosamente cercato come "batteria".
+    ris = piu_simili(query, coppie, soglia=0.85, chiave=lambda c: c[0])
     if ris: return ris[0][1]
 
     return query  # nessun match: query originale, invariata

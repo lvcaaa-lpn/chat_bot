@@ -31,7 +31,9 @@ def main():
     print(f"\nProvider: {config.PROVIDER} ({modello})")
     print("Scrivi 'esci' per terminare.\n")
 
-    log = (lambda n, a: print(f"  [{n}({a})]")) if config.DEBUG else None
+    log = (lambda n, a, e=None: print(
+        f"  [{n}({a})]" if e is None else f"  [{n} -> {e}]"
+    )) if config.DEBUG else None
 
     while True:
         try:
