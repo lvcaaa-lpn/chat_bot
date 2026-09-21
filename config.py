@@ -23,7 +23,7 @@ DEBUG = os.environ.get("LLM_DEBUG", "0") == "1"
 LLM = {
     "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
                "api_key": os.environ.get("GEMINI_API_KEY", ""),
-               "model": "gemini-3.5-flash-lite"}, # gemini-3.6-flash
+               "model": "gemini-3.5-flash-lite"}, # gemini-3.5-flash-lite, gemini-3-flash-preview
     "groq": {"base_url": "https://api.groq.com/openai/v1",
              "api_key": os.environ.get("GROQ_API_KEY", ""),
              "model": "llama-3.3-70b-versatile"},

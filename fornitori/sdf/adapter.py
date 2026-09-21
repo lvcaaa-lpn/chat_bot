@@ -331,22 +331,90 @@ class FornitoreSdf(Fornitore):
             per_tavola.setdefault(r["revision_id"], []).append(r)
 
         blocchi = []
-        for rev, elenco in list(per_tavola.items())[:8]:
+        for rev, elenco in list(per_tavola.items())[:self.MAX_BLOCCHI]:
             p = elenco[0]
             contesto = " / ".join(x for x in (p["group_name"],
                                               p["subgroup_name"],
                                               p["drawing_name"]) if x)
             nota = " - ".join(x for x in (p["notes"], p["tractor_sn_range"]) if x)
+
+            # Il testo cercato puo' agganciare solo alcune righe della
+            # tavola: le altre righe vicine per posizione sono spesso
+            # altri componenti dello stesso gruppo meccanico (es. le
+            # altre tenute di uno stesso gruppo mozzo-disco-pistone), utili
+            # se il cliente sta revisionando l'intero gruppo. Si e' visto
+            # in sessione che lasciare all'LLM il compito di NOTARE da
+            # solo questi pezzi dentro una lista JSON e' inaffidabile
+            # (stesso identico input, a volte li usa a volte no) - quindi
+            # li segnaliamo gia' pronti in una frase, e lasciamo al
+            # modello solo la decisione se e come usarla nella risposta.
+            trovati = elenco[:10]
+            codici_trovati = {r["code"] for r in trovati}
+            extra = self._pezzi_vicini(rev, trovati, codici_trovati)
+
+            nota_correlati = [
+                {"codice": a["code"],
+                 "descrizione": a["description"] or "",
+                 "posizione": a["position"] or ""}
+                for a in extra]
+
             blocchi.append({
                 "contesto": contesto,
                 "nota": nota or "",
-                "immagine": p["preview_url"] or "",
-                "articoli": [self._articolo(a) for a in elenco[:10]],
+                "articoli": [self._articolo(a) for a in trovati],
+                "nota_correlati": nota_correlati,
             })
 
         return {"marca": self.marca, "macchina": self.nome_macchina,
                 "ambiguo": False, "blocchi": blocchi,
                 "totale_codici": len({r["code"] for r in righe})}
+
+    # A differenza del numero di righe extra per blocco (dove tagliare
+    # aiuta, si e' visto che riduce solo rumore), tagliare il NUMERO di
+    # blocchi e' rischioso: il punteggio di _query mette spesso a pari
+    # merito una tavola pertinente e una che ha agganciato la ricerca solo
+    # di striscio (stesso motivo descritto li' - vedi commento su
+    # 'rilevanza'), quindi l'ordine tra i blocchi non è affidabile quanto
+    # sembra. Si e' visto in sessione un caso reale con la tavola giusta
+    # ottava su nove: un tetto a 8 l'avrebbe esclusa. Restava gia' a 8
+    # nella versione precedente di questo codice - lo teniamo alto.
+    MAX_BLOCCHI = 8
+    MAX_EXTRA_PER_BLOCCO = 15
+
+    @staticmethod
+    def _numero_posizione(position):
+        m = re.match(r"\d+", position or "")
+        return int(m.group()) if m else None
+
+    def _pezzi_vicini(self, revision_id, trovati, codici_trovati):
+        """Righe della stessa tavola non agganciate dalla ricerca
+        testuale, ordinate per vicinanza di posizione ai pezzi trovati
+        (numero di posizione principale, es. '11.2' -> 11) e limitate a
+        MAX_EXTRA_PER_BLOCCO: una via di mezzo tra 'solo la stessa
+        posizione esatta' (troppo stretto) e 'tutta la tavola' (troppo
+        rumore su tavole grandi)."""
+        posizioni_trovate = {n for n in
+                              (self._numero_posizione(r["position"]) for r in trovati)
+                              if n is not None}
+        tavola = self._pezzi_tavola(revision_id)
+        extra = [r for r in tavola if r["code"] not in codici_trovati]
+        if posizioni_trovate:
+            def distanza(r):
+                n = self._numero_posizione(r["position"])
+                if n is None:
+                    return 10 ** 9
+                return min(abs(n - pt) for pt in posizioni_trovate)
+            extra.sort(key=distanza)
+        return extra[:self.MAX_EXTRA_PER_BLOCCO]
+
+    def _pezzi_tavola(self, revision_id):
+        """Tutte le righe della tavola, per calcolare i vicini in
+        _pezzi_vicini - non usata direttamente nella risposta."""
+        return self.db.query(
+            """SELECT code, description, position, quantity, price,
+                      sellable, replaced, abolished
+               FROM part WHERE revision_id = ? ORDER BY position""",
+            (revision_id,))
 
     def _articolo(self, r):
         art = {

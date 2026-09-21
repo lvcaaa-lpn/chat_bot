@@ -4,7 +4,27 @@ L'API mescola due convenzioni di naming (ROW_ID/DISPLAY_NAME in maiuscolo per
 groups/families/models, rowId/description in camelCase altrove). Qui viene
 normalizzato tutto a snake_case, cosi' il resto del codice non se ne accorge.
 """
+from urllib.parse import urlencode
+
 from .client import SEARCH_CODE, SEARCH_DESCR
+
+# Il portale non restituisce un URL diretto per l'immagine dell'esploso
+# (il campo "previewUrl" che ci si aspetterebbe non e' mai presente nella
+# risposta), ma restituisce "imageName" (es. "B1/B19AA...png"), che va
+# combinato con questo endpoint - trovato catturando la richiesta di rete
+# del portale mentre mostra un disegno (stessa tecnica usata per il login,
+# vedi CLAUDE.md). Pubblico, non richiede il cookie di sessione: puo'
+# essere passato cosi' com'e' anche a servizi esterni (es. un LLM con
+# supporto immagini).
+_BASE_IMMAGINE = "https://eparts.sdfgroup.com/explorer/emaps"
+
+
+def _url_immagine(image_name):
+    if not image_name:
+        return None
+    query = urlencode({"context": "SDFI", "image": image_name,
+                        "mode": "sc", "width": 898, "height": 525})
+    return f"{_BASE_IMMAGINE}?{query}"
 
 
 def _pick(d, *keys, cast=None, default=None):
@@ -110,7 +130,7 @@ class SdfApi:
             "rif": d.get("rif"),
             "nove_punto": d.get("novePunto"),
             "image_name": d.get("imageName"),
-            "preview_url": d.get("previewUrl"),
+            "preview_url": _url_immagine(d.get("imageName")),
             "tractor_sn_range": d.get("tractorSNRange"),
             "engine_sn": d.get("engineSN"),
             "notes": " | ".join(notes) if isinstance(notes, list) else notes,

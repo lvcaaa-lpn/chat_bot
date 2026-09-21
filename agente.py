@@ -18,6 +18,7 @@ import config
 import cronologia
 from fornitori import carica_tutti
 
+
 # -------------------------------------------------------------------
 # STRUMENTI — sempre quattro, qualunque sia il numero di marche
 # -------------------------------------------------------------------
@@ -152,6 +153,16 @@ SE IL CLIENTE USA UN TERMINE IMPRECISO, DIALETTALE O SBAGLIATO
   senza aspettare che il cliente te lo richieda di nuovo - e dichiara
   comunque l'interpretazione fatta, come sopra. Se non ha senso (il
   cliente stava chiaramente parlando d'altro), ignora il suggerimento.
+
+PEZZI CORRELATI
+- Se un blocco ha "correlati_da_menzionare", la valutazione e' gia' stata
+  fatta: se la lista non e' vuota, riporta quei pezzi al cliente con il
+  loro codice, spiegando che fanno parte dello stesso gruppo e potrebbero
+  servire insieme. Se e' vuota, non menzionare nulla per quel blocco.
+- Se invece un blocco ha "nota_correlati" (la valutazione automatica non e'
+  riuscita), sono pezzi vicini nella stessa tavola, anche di tipo diverso
+  da quello cercato: menzionali solo se il cliente sta facendo una
+  revisione del gruppo o non e' chiaro quale pezzo preciso gli serva.
 
 SE IL CLIENTE CHIEDE PIU' PEZZI INSIEME NELLA STESSA FRASE
 - Es. "mi serve l'albero primario con il cuscinetto e il paraolio": sono
@@ -308,6 +319,102 @@ class Conversazione:
 
         return False
 
+    def  _valuta_correlati(self, llm, modello, testo_cliente, blocco):
+        ISTRUZIONI = """Sei un esperto di meccanica di ricambi per macchine agricole.
+
+                Ricevi la richiesta di un cliente e un blocco di risultati di catalogo. Il blocco contiene:
+                - "articoli": i pezzi trovati che corrispondono a quanto chiesto dal cliente;
+                - "nota_correlati": altri pezzi presenti nella stessa tavola, cioe' vicini agli articoli.
+
+                La richiesta contiene gli ultimi messaggi del cliente in ordine cronologico e i termini che sono stati cercati nel catalogo. 
+                Se i messaggi sono in contrasto, vale il più recente.
+
+                Il tuo compito e' decidere quali pezzi di "nota_correlati" vale la pena segnalare al cliente.
+
+                PASSO 1 - scenario_cliente
+                Leggi la richiesta e scegli UNO tra:
+                - "revisione_completa": il cliente parla di revisione, smontaggio, rifacimento o riparazione del gruppo, oppure chiede piu' pezzi dello stesso gruppo.
+                - "pezzo_isolato": il cliente chiede un pezzo preciso e non c'e' alcun indizio che stia lavorando sull'intero gruppo.
+                - "ambiguo": non e' chiaro quale tra piu' varianti simili gli serva, oppure non si capisce cosa stia facendo.
+
+                PASSO 2 - esito
+                - "revisione_completa" o "ambiguo" -> esito "menziona".
+                - "pezzo_isolato" -> esito "non_menziona".
+
+                PASSO 3 - correlati_da_menzionare
+                - Se esito e' "non_menziona": lista vuota.
+                - Se esito e' "menziona": inserisci i codici di "nota_correlati" che, con la tua conoscenza meccanica, fanno parte dello stesso gruppo degli articoli (es. cardano -> crociera), svolgono la stessa funzione o sono intercambiabili (es. cuscinetto -> boccola). Il tipo di pezzo puo' essere diverso da quello richiesto: una guarnizione puo' avere accanto un anello di tenuta o un pistone.
+                - Escludi i pezzi che non c'entrano con gli articoli, anche se stanno nella stessa tavola.
+                - Usa solo codici presenti in "nota_correlati", copiati esattamente. Non inventare codici.
+
+                ESEMPI
+                - Richiesta: "mi serve la guarnizione dei freni posteriori" -> scenario "ambiguo" (piu' guarnizioni possibili), esito "menziona", correlati: gli anelli di tenuta e le altre guarnizioni del gruppo freno.
+                - Richiesta: "sto rifacendo i freni, cosa mi serve?" -> scenario "revisione_completa", esito "menziona", correlati: i pezzi del gruppo freno.
+                - Richiesta: "codice della vite M8x20 della coppa" -> scenario "pezzo_isolato", esito "non_menziona", correlati: [].
+                """
+        msgs = [
+            {"role": "system", "content": ISTRUZIONI},
+            {"role": "user", "content": f"<richiesta_cliente>: {testo_cliente}</richiesta_cliente>"
+                                        f"<blocco>: {json.dumps(blocco, ensure_ascii=False)}</blocco>"}
+        ]
+        try:
+            risposta = llm.chat.completions.create(model=modello, 
+                                        messages=msgs, 
+                                        temperature=0,
+                                        response_format={
+                                            "type": "json_schema",
+                                            "json_schema": {
+                                                "name": "valutazione_correlati",
+                                                "strict": True,
+                                                "schema": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "scenario_cliente": {"type": "string", "enum": ["revisione_completa", "pezzo_isolato", "ambiguo"]},
+                                                        "esito": {"type": "string", "enum": ["menziona", "non_menziona"]},
+                                                        "correlati_da_menzionare": {"type": "array", "items": {"type": "string"}},
+                                                    },
+                                                    "required": ["scenario_cliente", "esito", "correlati_da_menzionare"],
+                                                    "additionalProperties": False,
+                                                },
+                                            },
+                                        }
+                                    )
+        except Exception as e:
+            return None
+        resp = json.loads(risposta.choices[0].message.content)
+
+        return resp
+
+    def _applica_correlati(self, llm, modello, out, args):
+        """Sostituisce, blocco per blocco, 'nota_correlati' con
+        'correlati_da_menzionare' (gia' deciso). Se la valutazione fallisce
+        il blocco resta com'e', con la lista completa."""
+
+        msg_cliente = [m["content"] for m in self.messaggi if m["role"]=="user" and isinstance(m["content"], str)]
+        ultimi = msg_cliente[-3:]
+        testo_ultimi = "\n".join(f"- {t}" for t in ultimi)
+        contesto = f"Ultimi messaggi del cliente:\n{testo_ultimi}\n\nTermini cercati: {args.get('testo')}"
+
+        for b in out.get("blocchi", []):
+            correlati = b.get("nota_correlati")
+            if not correlati:
+                continue
+            sintesi = {
+                "contesto": b.get("contesto", ""),
+                "articoli": [{"codice": a.get("codice"), "descrizione": a.get("descrizione")}
+                             for a in b.get("articoli", [])],
+                "nota_correlati": correlati,
+            }
+            val = self._valuta_correlati(llm, modello, contesto, sintesi)
+            if val is None:
+                continue
+            cronologia.registra_strumento(
+                self.sessione_id, "valutazione_correlati",
+                {"tavola": b.get("contesto", ""), "richiesta": contesto}, val)
+            scelti = set(val.get("correlati_da_menzionare", []))
+            b.pop("nota_correlati")
+            b["correlati_da_menzionare"] = [c for c in correlati if c["codice"] in scelti]
+
     def tronca(self, massimo=40):
         """
         Le conversazioni lunghe costano: tengo il prompt e la coda.
@@ -444,6 +551,9 @@ class Conversazione:
                                    "(marca inclusa se gia' nota).")}
                     else:
                         out = self.dispatch[nome](**args)
+
+                    if nome == "cerca_ricambio" and not out.get("bloccato"):
+                        self._applica_correlati(llm, modello, out, args)
 
                     if nome == "trova_macchina":
                         self.attesa_conferma = bool(
