@@ -65,5 +65,11 @@ def configura(livello=None):
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("openai").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    # su alcune postazioni un software di rete/sicurezza intercetta le
+    # connessioni HTTPS instradandole su una copia di httpx/httpcore
+    # rinominata con un suffisso numerico (osservato "httpx2"/"httpcore2")
+    # per non entrare in conflitto con quella installata via pip
+    logging.getLogger("httpx2").setLevel(logging.WARNING)
+    logging.getLogger("httpcore2").setLevel(logging.WARNING)
 
     return root
