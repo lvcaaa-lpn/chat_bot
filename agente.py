@@ -18,6 +18,10 @@ import config
 import cronologia
 from fornitori import carica_tutti
 
+import logging
+import time
+log = logging.getLogger("agente")
+
 
 # -------------------------------------------------------------------
 # STRUMENTI — sempre quattro, qualunque sia il numero di marche
@@ -319,10 +323,10 @@ class Conversazione:
 
         return False
 
-    def  _valuta_correlati(self, llm, modello, testo_cliente, blocco):
+    def _valuta_correlati(self, llm, modello, testo_cliente, blocchi):
         ISTRUZIONI = """Sei un esperto di meccanica di ricambi per macchine agricole.
 
-                Ricevi la richiesta di un cliente e un blocco di risultati di catalogo. Il blocco contiene:
+                Ricevi la richiesta di un cliente e una lista di blocchi di risultati di catalogo, numerati con il campo "indice". Ogni blocco contiene:
                 - "articoli": i pezzi trovati che corrispondono a quanto chiesto dal cliente;
                 - "nota_correlati": altri pezzi presenti nella stessa tavola, cioe' vicini agli articoli.
 
@@ -330,9 +334,10 @@ class Conversazione:
                 Se i messaggi sono in contrasto, vale il più recente.
 
                 Il tuo compito e' decidere quali pezzi di "nota_correlati" vale la pena segnalare al cliente.
+                Lo scenario e l'esito descrivono cosa sta facendo il cliente: si decidono UNA VOLTA SOLA per l'intera richiesta, uguali per tutti i blocchi. Cio' che cambia da un blocco all'altro sono solo i codici scelti.
 
                 PASSO 1 - scenario_cliente
-                Leggi la richiesta e scegli UNO tra:
+                Leggi la richiesta (non i blocchi) e scegli UNO tra:
                 - "revisione_completa": il cliente parla di revisione, smontaggio, rifacimento o riparazione del gruppo, oppure chiede piu' pezzi dello stesso gruppo.
                 - "pezzo_isolato": il cliente chiede un pezzo preciso e non c'e' alcun indizio che stia lavorando sull'intero gruppo.
                 - "ambiguo": non e' chiaro quale tra piu' varianti simili gli serva, oppure non si capisce cosa stia facendo.
@@ -341,11 +346,12 @@ class Conversazione:
                 - "revisione_completa" o "ambiguo" -> esito "menziona".
                 - "pezzo_isolato" -> esito "non_menziona".
 
-                PASSO 3 - correlati_da_menzionare
-                - Se esito e' "non_menziona": lista vuota.
-                - Se esito e' "menziona": inserisci i codici di "nota_correlati" che, con la tua conoscenza meccanica, fanno parte dello stesso gruppo degli articoli (es. cardano -> crociera), svolgono la stessa funzione o sono intercambiabili (es. cuscinetto -> boccola). Il tipo di pezzo puo' essere diverso da quello richiesto: una guarnizione puo' avere accanto un anello di tenuta o un pistone.
+                PASSO 3 - blocchi
+                - Restituisci UNA voce per OGNI blocco ricevuto, con il suo "indice" e la lista "correlati_da_menzionare".
+                - Se esito e' "non_menziona": tutte le liste sono vuote.
+                - Se esito e' "menziona": per ogni blocco inserisci i codici del SUO "nota_correlati" che, con la tua conoscenza meccanica, fanno parte dello stesso gruppo degli articoli (es. cardano -> crociera), svolgono la stessa funzione o sono intercambiabili (es. cuscinetto -> boccola). Il tipo di pezzo puo' essere diverso da quello richiesto: una guarnizione puo' avere accanto un anello di tenuta o un pistone.
                 - Escludi i pezzi che non c'entrano con gli articoli, anche se stanno nella stessa tavola.
-                - Usa solo codici presenti in "nota_correlati", copiati esattamente. Non inventare codici.
+                - Usa solo codici presenti nel "nota_correlati" di quello stesso blocco, copiati esattamente. Non inventare codici.
 
                 ESEMPI
                 - Richiesta: "mi serve la guarnizione dei freni posteriori" -> scenario "ambiguo" (piu' guarnizioni possibili), esito "menziona", correlati: gli anelli di tenuta e le altre guarnizioni del gruppo freno.
@@ -355,12 +361,13 @@ class Conversazione:
         msgs = [
             {"role": "system", "content": ISTRUZIONI},
             {"role": "user", "content": f"<richiesta_cliente>: {testo_cliente}</richiesta_cliente>"
-                                        f"<blocco>: {json.dumps(blocco, ensure_ascii=False)}</blocco>"}
+                                        f"<blocchi>: {json.dumps(blocchi, ensure_ascii=False)}</blocchi>"}
         ]
         try:
             risposta = llm.chat.completions.create(model=modello, 
                                         messages=msgs, 
                                         temperature=0,
+                                         **_params_llm(),
                                         response_format={
                                             "type": "json_schema",
                                             "json_schema": {
@@ -371,9 +378,17 @@ class Conversazione:
                                                     "properties": {
                                                         "scenario_cliente": {"type": "string", "enum": ["revisione_completa", "pezzo_isolato", "ambiguo"]},
                                                         "esito": {"type": "string", "enum": ["menziona", "non_menziona"]},
-                                                        "correlati_da_menzionare": {"type": "array", "items": {"type": "string"}},
+                                                        "blocchi": {"type": "array", "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "indice": {"type": "integer"},
+                                                                "correlati_da_menzionare": {"type": "array", "items": {"type": "string"}},
+                                                            },
+                                                            "required": ["indice", "correlati_da_menzionare"],
+                                                            "additionalProperties": False,
+                                                        }},
                                                     },
-                                                    "required": ["scenario_cliente", "esito", "correlati_da_menzionare"],
+                                                    "required": ["scenario_cliente", "esito", "blocchi"],
                                                     "additionalProperties": False,
                                                 },
                                             },
@@ -381,9 +396,10 @@ class Conversazione:
                                     )
         except Exception as e:
             return None
-        resp = json.loads(risposta.choices[0].message.content)
-
-        return resp
+        try:
+            return json.loads(risposta.choices[0].message.content)
+        except (json.JSONDecodeError, TypeError):
+            return None
 
     def _applica_correlati(self, llm, modello, out, args):
         """Sostituisce, blocco per blocco, 'nota_correlati' con
@@ -395,25 +411,46 @@ class Conversazione:
         testo_ultimi = "\n".join(f"- {t}" for t in ultimi)
         contesto = f"Ultimi messaggi del cliente:\n{testo_ultimi}\n\nTermini cercati: {args.get('testo')}"
 
-        for b in out.get("blocchi", []):
-            correlati = b.get("nota_correlati")
-            if not correlati:
+        da_valutare = {}
+        for i, b in enumerate(out.get("blocchi", [])):
+            if b.get("nota_correlati"):
+                da_valutare[i] = b
+        if not da_valutare:
+            return
+
+        sintesi = [{
+            "indice": i,
+            "contesto": b.get("contesto", ""),
+            "articoli": [{"codice": a.get("codice"), "descrizione": a.get("descrizione")}
+                         for a in b.get("articoli", [])],
+            "nota_correlati": b["nota_correlati"],
+        } for i, b in da_valutare.items()]
+
+        t0 = time.time()
+        val = self._valuta_correlati(llm, modello, contesto, sintesi)
+        if val is None:
+            log.warning("CORRELATI: valutazione fallita (%.1fs), blocchi lasciati com'erano",
+                        time.time() - t0)
+            return
+
+        cronologia.registra_strumento(
+            self.sessione_id, "valutazione_correlati",
+            {"blocchi": len(sintesi), "richiesta": contesto}, val)
+
+        per_indice = {v.get("indice"): v.get("correlati_da_menzionare", [])
+                      for v in val.get("blocchi", [])}
+        n_scelti = 0
+        for i, b in da_valutare.items():
+            if i not in per_indice:
                 continue
-            sintesi = {
-                "contesto": b.get("contesto", ""),
-                "articoli": [{"codice": a.get("codice"), "descrizione": a.get("descrizione")}
-                             for a in b.get("articoli", [])],
-                "nota_correlati": correlati,
-            }
-            val = self._valuta_correlati(llm, modello, contesto, sintesi)
-            if val is None:
-                continue
-            cronologia.registra_strumento(
-                self.sessione_id, "valutazione_correlati",
-                {"tavola": b.get("contesto", ""), "richiesta": contesto}, val)
-            scelti = set(val.get("correlati_da_menzionare", []))
-            b.pop("nota_correlati")
+            correlati = b.pop("nota_correlati")
+            scelti = set(per_indice[i])
             b["correlati_da_menzionare"] = [c for c in correlati if c["codice"] in scelti]
+            n_scelti += len(b["correlati_da_menzionare"])
+
+        log.info("CORRELATI: %s/%s, %d blocchi valutati, %d codici scelti (%.1fs)",
+                 val["scenario_cliente"], val["esito"], len(da_valutare), n_scelti,
+                 time.time() - t0)
 
     def tronca(self, massimo=40):
         """
@@ -453,11 +490,14 @@ class Conversazione:
         self.attesa_conferma = False
         cronologia.registra_messaggio(self.sessione_id, "cliente", testo)
 
+        log.info('Cliente: "%s"', testo[:150])
+
         for _ in range(MAX_GIRI):
             try:
+                t0 = time.time()
                 risposta = llm.chat.completions.create(
                     model=modello, messages=self.messaggi,
-                    tools=TOOLS, temperature=0.2)
+                    tools=TOOLS, temperature=0.2, **_params_llm())
             except Exception as e:
                 print("ERRORE LLM:", repr(e)) 
                 return {"risposta": "Il servizio non risponde. Riprova tra poco.",
@@ -465,6 +505,13 @@ class Conversazione:
 
             msg = risposta.choices[0].message
             self.messaggi.append(msg.model_dump(exclude_none=True))
+
+            u = risposta.usage
+            log.info("LLM: %.1fs (prompt %s tok, output %s tok) -> %s",
+                    time.time() - t0,
+                    getattr(u, "prompt_tokens", "?"), getattr(u, "completion_tokens", "?"),
+                    "tool: " + ", ".join(t.function.name for t in msg.tool_calls)
+                    if msg.tool_calls else "risposta finale")
 
             if not msg.tool_calls:
                 cronologia.registra_messaggio(self.sessione_id, "bot", msg.content or "")
@@ -512,6 +559,9 @@ class Conversazione:
                     if su_strumento:
                         su_strumento(nome, args, None)
 
+                    log.info("TOOL %s %s", nome, args)
+                    t1 = time.time()
+
                     # trova_macchina puo' segnalare che l'identificazione non
                     # e' certa (piu' candidate, richiede_conferma). Il modello
                     # a volte ignora quel segnale e prova a fissare comunque
@@ -555,6 +605,9 @@ class Conversazione:
                     if nome == "cerca_ricambio" and not out.get("bloccato"):
                         self._applica_correlati(llm, modello, out, args)
 
+                    log.info("TOOL %s finito in %.1fs: %s", nome, time.time() - t1,
+                             _riassunto(out))
+
                     if nome == "trova_macchina":
                         self.attesa_conferma = bool(
                             out.get("richiede_conferma") or out.get("piu_marche")
@@ -589,9 +642,22 @@ class Conversazione:
                             "descrivere il pezzo in modo diverso.",
                 "errore": False, "strumenti": usati}
 
+def _params_llm():
+    return config.LLM[config.PROVIDER].get("params", {})
+
+
+def _riassunto(out):
+    if out.get("bloccato"):
+        return "BLOCCATO"
+    if out.get("errore_di_sistema"):
+        return "ERRORE"
+    if "blocchi" in out:
+        return f"{len(out['blocchi'])} blocchi"
+    return f"chiavi: {list(out)[:5]}"
 
 def crea_llm():
     cfg = config.LLM[config.PROVIDER]
     if not cfg["api_key"]:
         raise RuntimeError(f"Manca la chiave API per '{config.PROVIDER}'.")
     return OpenAI(base_url=cfg["base_url"], api_key=cfg["api_key"]), cfg["model"]
+

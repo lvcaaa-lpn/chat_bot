@@ -262,7 +262,11 @@ class FornitoreSdf(Fornitore):
             return {"marca": self.marca, "trovato": True,
                     "selezionata": f"{label} {r['modelDescription']}",
                     "richiede_conferma": False,
-                    "matricola": r.get("serialNumber"),
+                    # identificativo interno SDF, NON la matricola del cliente
+                    # (quella resta in args["matricola"], invariata) - nomi
+                    # diversi apposta, per non farli confondere a un modello
+                    # che copia campi dal risultato del tool precedente
+                    "numero_serie_interno": r.get("serialNumber"),
                     "motore": r.get("engineNumber")}
         return None
 
@@ -330,13 +334,49 @@ class FornitoreSdf(Fornitore):
         for r in righe:
             per_tavola.setdefault(r["revision_id"], []).append(r)
 
+        # Piu' revisioni della stessa tavola con gli stessi pezzi trovati
+        # (cambia solo il range di telaio) valgono un blocco solo: si
+        # tiene la prima e se ne uniscono i range di telaio nella nota.
+        unite = {}
+        for rev, elenco in per_tavola.items():
+            p = elenco[0]
+            chiave = (p["group_name"], p["subgroup_name"], p["drawing_name"], p["notes"],
+                      tuple(sorted((r["code"], r["position"], r["quantity"]) for r in elenco)))
+            if chiave in unite:
+                unite[chiave]["range"].append(p["tractor_sn_range"])
+            else:
+                unite[chiave] = {"rev": rev, "elenco": elenco,
+                                 "range": [p["tractor_sn_range"]]}
+
+        # A pari rilevanza/pertinenza (frequente: sono punteggi grezzi),
+        # l'ordine tra tavole NON puo' dipendere dall'id interno SDF della
+        # tavola (revision_id): non ha alcun legame con quanto la tavola
+        # sia pertinente, ed e' quello che faceva restare fuori dal tetto
+        # MAX_BLOCCHI tavole importanti per puro caso (es. FRENI ANTERIORI
+        # scartata a favore di una valvola dell'impianto frenatura, a
+        # parita' di punteggio). Si aggiunge un terzo criterio, quante
+        # righe di QUESTA tavola la ricerca ha agganciato: una tavola dove
+        # 2 pezzi diversi rispondono alla ricerca e' piu' centrale di una
+        # dove ne risponde 1 solo. Ultimo pareggio: nome tavola, cosi'
+        # l'ordine e' sempre riproducibile e spiegabile, mai arbitrario.
+        def punteggio_tavola(u):
+            el = u["elenco"]
+            return (max(r["rilevanza"] for r in el),
+                    max(r["pertinenza_tavola"] for r in el),
+                    len(el),
+                    el[0]["drawing_name"] or "")
+
+        ordinate = sorted(unite.values(), key=punteggio_tavola, reverse=True)
+
         blocchi = []
-        for rev, elenco in list(per_tavola.items())[:self.MAX_BLOCCHI]:
+        for u in ordinate[:self.MAX_BLOCCHI]:
+            rev, elenco = u["rev"], u["elenco"]
             p = elenco[0]
             contesto = " / ".join(x for x in (p["group_name"],
                                               p["subgroup_name"],
                                               p["drawing_name"]) if x)
-            nota = " - ".join(x for x in (p["notes"], p["tractor_sn_range"]) if x)
+            range_telaio = ", ".join(x for x in u["range"] if x)
+            nota = " - ".join(x for x in (p["notes"], range_telaio) if x)
 
             # Il testo cercato puo' agganciare solo alcune righe della
             # tavola: le altre righe vicine per posizione sono spesso
@@ -539,6 +579,12 @@ class FornitoreSdf(Fornitore):
     # richiesta "freni posteriori" non troverebbe nulla.
     CAMPI_RICERCA = ("p.description", "p.code", "d.name", "g.name", "s.name")
 
+    # Nome di tavola, gruppo e sottogruppo: a parita' di rilevanza sul
+    # pezzo, viene prima la tavola che nomina la parola cercata in piu' di
+    # questi campi (es. "FRENI POSTERIORI" / "SCATOLE FRENO POSTERIORE"
+    # prima di una valvola dell'impianto frenatura).
+    CAMPI_CONTESTO = ("d.name", "g.name", "s.name")
+
     def _query(self, testo, limit=60):
         """Cerca nelle tavole del modello corrente.
 
@@ -557,13 +603,19 @@ class FornitoreSdf(Fornitore):
         punteggio = " + ".join(
             "(CASE WHEN p.description LIKE ? OR p.code LIKE ? THEN 1 ELSE 0 END)"
             for _ in parole)
+        pertinenza = " + ".join(
+            f"(CASE WHEN {c} LIKE ? THEN 1 ELSE 0 END)"
+            for _ in parole for c in self.CAMPI_CONTESTO)
 
         # ATTENZIONE ALL'ORDINE: SQLite lega i '?' nell'ordine in cui
         # compaiono nella query, e il SELECT precede il WHERE. Gli argomenti
-        # del punteggio vanno quindi PRIMA di quelli della condizione.
+        # del punteggio e della pertinenza vanno quindi PRIMA di quelli
+        # della condizione, nello stesso ordine delle colonne del SELECT.
         args = []
         for w in parole:
             args += [f"%{w}%", f"%{w}%"]
+        for w in parole:
+            args += [f"%{w}%"] * len(self.CAMPI_CONTESTO)
         for w in parole:
             args += [f"%{w}%"] * len(self.CAMPI_RICERCA)
         args += [BRANDS[self.brand], self.model_id, limit]
@@ -574,14 +626,15 @@ class FornitoreSdf(Fornitore):
                    d.revision_id, d.name AS drawing_name, d.notes,
                    d.tractor_sn_range, d.preview_url,
                    g.name AS group_name, s.name AS subgroup_name,
-                   ({punteggio}) AS rilevanza
+                   ({punteggio}) AS rilevanza,
+                   ({pertinenza}) AS pertinenza_tavola
             FROM part p
             JOIN drawing d        ON d.revision_id = p.revision_id
             JOIN model_drawing md ON md.revision_id = p.revision_id
             LEFT JOIN grp g       ON g.row_id = md.group_id
             LEFT JOIN subgroup s  ON s.row_id = md.subgroup_id
             WHERE {cond} AND md.brand = ? AND md.model_id = ?
-            ORDER BY rilevanza DESC, d.revision_id, p.position
+            ORDER BY rilevanza DESC, pertinenza_tavola DESC, d.revision_id, p.position
             LIMIT ?
         """, args)
 
