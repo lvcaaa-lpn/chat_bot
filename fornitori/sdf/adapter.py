@@ -48,6 +48,19 @@ _MODELLI_LK = threading.Lock()
 # ordine di ricerca quando la marca non e' nota
 MARCHE = ["SAME", "DEUTZ-FAHR", "HURLIMANN", "LAMBORGHINI"]
 
+# La ricerca 'cric/models/search' di SDF e' sensibile alla spaziatura tra
+# numero e sigla: "5105 DF" trova il modello, "5105DF"/"5105df" (attaccati,
+# come spesso li scrive il cliente e come il modello li ripete tal quali)
+# non trovano NULLA - non e' un problema di maiuscole/minuscole (verificato:
+# "5105 df" funziona) ne' di refuso, quindi non serve il fallback fuzzy
+# (lento: scarica l'intero elenco modelli via API). Si separa cifre e
+# lettere attaccate e si riprova, prima di arrendersi al fuzzy.
+_SEPARA_NUM_LETT = re.compile(r"(?<=[0-9])(?=[A-Za-z])|(?<=[A-Za-z])(?=[0-9])")
+
+
+def _normalizza_spaziatura(testo):
+    return _SEPARA_NUM_LETT.sub(" ", testo or "")
+
 
 def _id_macchina(brand, family_id, model_id):
     return f"{brand}:{family_id}:{model_id}"
@@ -124,6 +137,20 @@ class FornitoreSdf(Fornitore):
                         "messaggio": "Sessione SDF scaduta: serve un nuovo login."}
             except Exception:
                 continue
+
+        if not candidate:
+            variante = _normalizza_spaziatura(modello)
+            if variante != modello:
+                for label in marche:
+                    if label not in BRANDS:
+                        continue
+                    try:
+                        candidate += self._cerca_modello(label, variante)
+                    except SessionExpired:
+                        return {"marca": self.marca, "trovato": False,
+                                "messaggio": "Sessione SDF scaduta: serve un nuovo login."}
+                    except Exception:
+                        continue
 
         if not candidate:
             simili = self._cerca_fuzzy(marche, modello)
