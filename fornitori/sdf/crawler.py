@@ -1,7 +1,7 @@
 """Popolamento incrementale del DB. Riprendibile dopo interruzione."""
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .client import SessionExpired
+from .client import SessionExpired, SdfNonRaggiungibile
 
 # quante tavole scaricare in parallelo dentro un gruppo. Misurato a mano col
 # comando 'bench' del CLI SDF (vedi CLAUDE.md): su un campione di 34 tavole,
@@ -106,8 +106,7 @@ class Crawler:
                                 if subs:
                                     self.log(f"{p['code']} -> " +
                                              ", ".join(s["code"] for s in subs), 4)
-                            except SessionExpired:
-                                raise
+                            except (SessionExpired, SdfNonRaggiungibile): raise
                             except Exception as e:
                                 self.log(f"[{p['code']}] sostituzioni non "
                                         f"recuperate: {e!r}", 4)
@@ -168,8 +167,7 @@ class Crawler:
                             if subs:
                                 self.log(f"{p['code']} -> " +
                                          ", ".join(s["code"] for s in subs), 4)
-                        except SessionExpired:
-                            raise
+                        except (SessionExpired, SdfNonRaggiungibile): raise
                         except Exception as e:
                             self.log(f"[{p['code']}] sostituzioni non "
                                     f"recuperate: {e!r}", 4)
@@ -227,8 +225,7 @@ class Crawler:
             self.log(f"=== {f['name']} ===")
             try:
                 tot += self.crawl_family(brand, f["row_id"], with_subs)
-            except SessionExpired:
-                raise
+            except (SessionExpired, SdfNonRaggiungibile): raise
             except Exception as e:
                 self.log(f"! errore su {f['name']}: {e}")
         return tot

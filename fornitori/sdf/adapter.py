@@ -20,7 +20,7 @@ import threading
 
 import config
 from ..base import Fornitore
-from .client import BRANDS, SdfClient, SessionExpired
+from .client import BRANDS, SdfClient, SessionExpired, SdfNonRaggiungibile
 from .api import SdfApi
 from .db import Db
 from .crawler import Crawler
@@ -103,11 +103,20 @@ class FornitoreSdf(Fornitore):
         try:
             return bool(self.api.families(brand="SAME"))
         except Exception:
+            log.exception("SDF: controllo disponibilita' fallito")
             return False
 
     def _reset(self):
         self.brand = self.family_id = self.model_id = None
         self.nome_macchina = self.machine = None
+
+    def _non_raggiungibile(self, e):
+        log.error("SDF non raggiungibile: %s", e)
+        return {"marca": self.marca, "trovato": False,
+                "errore": "sdf_non_raggiungibile",
+                "messaggio": "Il catalogo SDF non e' raggiungibile in questo "
+                            "momento. Dillo al cliente e invitalo a riprovare "
+                            "piu' tardi: NON dire che il modello non esiste."}
 
     # ------------------------------------------------- ricerca macchina
     def trova_macchina(self, marca=None, modello=None, matricola=None,
@@ -135,7 +144,10 @@ class FornitoreSdf(Fornitore):
             except SessionExpired:
                 return {"marca": self.marca, "trovato": False,
                         "messaggio": "Sessione SDF scaduta: serve un nuovo login."}
+            except SdfNonRaggiungibile as e:
+                return self._non_raggiungibile(e)
             except Exception:
+                log.exception("SDF: ricerca modello su %s fallita", label)
                 continue
 
         if not candidate:
@@ -149,11 +161,17 @@ class FornitoreSdf(Fornitore):
                     except SessionExpired:
                         return {"marca": self.marca, "trovato": False,
                                 "messaggio": "Sessione SDF scaduta: serve un nuovo login."}
+                    except SdfNonRaggiungibile as e:
+                        return self._non_raggiungibile(e)
                     except Exception:
+                        log.exception("SDF: ricerca modello su %s fallita", label)
                         continue
 
         if not candidate:
-            simili = self._cerca_fuzzy(marche, modello)
+            try:
+                simili = self._cerca_fuzzy(marche, modello)
+            except SdfNonRaggiungibile as e:
+                return self._non_raggiungibile(e)
             if not simili:
                 return {"marca": self.marca, "trovato": False,
                         "messaggio": f"Nessun modello SDF per '{modello}'."}
@@ -247,7 +265,10 @@ class FornitoreSdf(Fornitore):
                         # ("ARGON 65 -> NNZJY...") o diluirebbe la somiglianza
                         "nome_confronto": m["name"].split("->")[0].strip(),
                     })
+        except SdfNonRaggiungibile:
+            raise
         except Exception:
+            log.exception("SDF: elenco modelli %s non recuperato", brand_label)
             return []
         with _MODELLI_LK:
             _MODELLI_CACHE[brand_label] = out
@@ -308,7 +329,10 @@ class FornitoreSdf(Fornitore):
             return {"marca": self.marca, "selezionata": self.nome_macchina}
         except SessionExpired:
             return {"errore": "Sessione SDF scaduta: serve un nuovo login."}
+        except SdfNonRaggiungibile as e:
+            return self._non_raggiungibile(e)
         except Exception as e:
+            log.exception("SDF: scelta macchina %s fallita", id_macchina)
             return {"errore": str(e)}
 
     def _nome_modello(self, brand, fam, mod):

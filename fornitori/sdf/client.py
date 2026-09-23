@@ -6,6 +6,11 @@ import threading
 import time
 from urllib.parse import urljoin
 
+import ssl
+from pathlib import Path
+import certifi
+from requests.adapters import HTTPAdapter
+
 import requests
 
 import config
@@ -39,6 +44,27 @@ class SessionExpired(RuntimeError):
 class LoginError(RuntimeError):
     """Il login automatico e' fallito (credenziali errate o flusso cambiato)."""
 
+class SdfNonRaggiungibile(RuntimeError):
+    """Portale SDF non raggiungibile o login fallito: esito finale,
+    da mostrare come 'SDF non raggiungibile', non come 'nessun risultato'."""
+
+INTERMEDI = Path(__file__).resolve().parent / "intermedi.pem"
+
+def _contesto_ssl():
+    ctx = ssl.create_default_context(cafile=certifi.where())
+    if INTERMEDI.exists():
+        ctx.load_verify_locations(cafile=str(INTERMEDI))
+    return ctx
+
+class _AdapterSdf(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["ssl_context"] = _contesto_ssl()
+        return super().init_poolmanager(*args, **kwargs)
+
+def _sessione_http():
+    s = requests.Session()
+    s.mount("https://", _AdapterSdf())
+    return s
 
 # ----------------------------------------------------------------------
 # Login automatico (Auth0 -> store.sdfgroup.com -> ita.store.sdfgroup.com
@@ -96,7 +122,7 @@ def login_automatico(username, password, timeout=30):
     if not username or not password:
         raise LoginError("login SDF: username o password mancanti")
 
-    s = requests.Session()
+    s = _sessione_http()
     s.headers.update({"User-Agent": _UA})
 
     # 1. store.sdfgroup.com avvia il login OIDC verso Auth0
@@ -206,7 +232,7 @@ class SdfClient:
         self._last = 0.0
         self._throttle_lk = threading.Lock()
         self._sessione_lk = threading.Lock()
-        self.s = requests.Session()
+        self.s = _sessione_http()
         self.s.headers.update({
             "Cookie": self.cookie,
             "Accept-Language": f"{lang},it;q=0.9",
@@ -268,7 +294,11 @@ class SdfClient:
                 log.info("SDF: sessione gia' rinnovata da un altro thread, riuso quella")
                 return
             log.warning("SDF: sessione scaduta, rifaccio il login automatico")
-            self.cookie = login_automatico(self.username, self.password)
+            try:
+                self.cookie = login_automatico(self.username, self.password)
+            except (LoginError, requests.RequestException) as e:
+                log.error("SDF: login automatico fallito: %s", e)
+                raise SdfNonRaggiungibile(f"login automatico fallito: {e}") from e
             self.s.headers["Cookie"] = self.cookie
             self._salva_cookie()
 
@@ -320,7 +350,7 @@ class SdfClient:
                          path, brand or self.brand, attempt, (time.time() - t0) * 1000,
                          type(e).__name__)
                 if attempt == retries:
-                    raise
+                    raise SdfNonRaggiungibile(f"{type(e).__name__}: {e}") from e
                 time.sleep(2 ** attempt)
 
     def _post(self, path, brand, retries, **body):
@@ -346,5 +376,5 @@ class SdfClient:
                          path, brand or self.brand, attempt, (time.time() - t0) * 1000,
                          type(e).__name__)
                 if attempt == retries:
-                    raise
+                    raise SdfNonRaggiungibile(f"{type(e).__name__}: {e}") from e
                 time.sleep(2 ** attempt)

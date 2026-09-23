@@ -4,7 +4,7 @@ Registro dei fornitori.
 Scopre da solo le sottocartelle di 'fornitori/' che espongono una
 funzione crea(). Per aggiungere una marca basta creare la cartella:
 nessun altro file da modificare.
-"""
+""" 
 
 import importlib
 import pkgutil
