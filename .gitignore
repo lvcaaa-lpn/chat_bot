@@ -45,3 +45,7 @@ claude.txt
 # copia, troppo grandi e troppo divergenti per stare nel repo
 dati/goldoni.db
 fornitori/sdf/sdf.db
+
+# file di LANCER
+LANCER/
+LANCER.zip
