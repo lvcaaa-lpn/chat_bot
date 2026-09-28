@@ -1,0 +1,54 @@
+Tale controllo deve essere eseguito all'inizio di ogni nuova lavoro.
+
+Trasmissione/ i con limitatore di sicurezza e bullone di sicurezza.
+
+CAUTION
+
+Il limitatore, inserito nel giunto cardanico, è dotato di un bullone di sicurezza tarato per una
+forza media. Qualora ostacoli eccessivamente resistenti provochino il tranciamento del
+bullone, esso deve essere sostituito da un nuovo bullone, delle stesse dimensioni e mate-
+riale. Vedere Fig 4.6 per la posizione del bullone di taglio.
+
+\ COPPIE DI SERRAGGIO VITI { Nm)
+
+|T PASSO | ciassaa | diass105
+MBx 1 25 36
+
+M10X1.25
+MI12x1.25
+M14x1.5
+M16x1.5
+M18x1.5
+M20x1.5
+M22x1.5
+M24x2
+M27x2
+M30x2
+
+32
+96
+143
+215
+300
+430
+
+740
+1065
+
+74
+127
+201
+301
+433
+606
+803
+1028
+1504
+2081
+
+In caso di giunto cardanico con frizione attenersi al serraggio originale del giunto in dota-
+
+zione
+
+p»
+[3 LANCER'

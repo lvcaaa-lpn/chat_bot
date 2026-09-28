@@ -1,0 +1,12 @@
+3.11 TRASMISSIONE LATERALE
+
+La trasmissione della forza motrice al rotore avviene tramite cinghia trapezoidale con puleggia registrabile.
+Periodicamente, ed in caso di malfunzionamento o slittamento, controllare la tensione delle cinghie di trasmissione come segue:
+- Rimuovere i bulloni che fissano il carter di protezione. Aprire l'involucro tirandolo verso l'esterno.
+- Allentare i bulloni che fissano il moltiplicatore alla struttura.
+- Agire sulle due viti di regolazione per tendere correttamente le cinghie.
+- Allungamento tollerato di 1 cm con una forza applicata di 5 kg.
+- Verificare l'allineamento delle pulegge una volta tese le cinghie.
+- Serrare tutti i bulloni allentati.
+
+- Rimontare il carter e fissarlo con i bulloni tolti in precedenza.

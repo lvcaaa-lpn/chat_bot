@@ -1,0 +1,187 @@
+1.2 DATI TECNICI DEL MODELLO REGOLABILE {Spostamento laterale manuale e idraulico)
+
+SERIE JMH {CENTRO} SERIE JMH (OFFSET)
+
+SERIE JLH {(CENTRO}
+
+MODELLO JLH 120 | JLH 140
+Trattore (CV} 25-45 30-45
+
+pesolt) | z
+
+1370
+
+32 | 36 | 40 | aa
+|N.dimazza(No) | 16 | 18 | 20 | 22
+ESEZ
+
+_ i370 | 1570 | 1770 | 1870
+
+1570
+
+i)
+d __ sss | ass | aoss l aoss |aiso [ s0 | asso | unso
+i ]
+
+Disassamento {mm)
+
+| 880 | aa0
+--
+=-
+
+aniaco |
+
+1770
+
+SERIE JLH {CENTRA
+
+sss0
+
+ma_lmmum
+
+Larghezza di lavoro {MIM)
+N. di lama {No)
+
+Libbre di peso)
+
+16 20
+STl 545
+1970 1810 2010
+
+2210 2410
+
+CON EN N DAC
+P s | 66 | 7 ] ss
+D CE EC EST ETT
+
+40-80
+1600
+
+32+16
+
+16
+508
+
+1810
+1150
+1065
+
+465
+
+JMH 1805
+40-80
+1800
+40+20
+
+0
+42
+
+JIMH 2005
+45-80
+2000
+44+22
+
+22
+
+577
+
+2210
+
+1150
+
+990
+
+1265
+
+865
+
+665
+
+1065
+
+50 -80
+2200
+48+24
+
+2410
+
+1150
+
+ET
+
+SERIE JMH {(CENTRO} SERIE JMH (OFFSET)
+
+79
+
+E
+
+r a aa
+
+1126
+
+30-60
+
+32+16
+
+JMH 1805
+30-60
+
+40+20
+
+1195
+
+JMH 2005
+34-60
+
+44+22
+
+1272
+
+37-60
+
+48+24
+
+1347
+
+IEC
+ENES
+n dnaaino | a
+
+W (POLLICE}
+
+EEE
+
+s LE
+
+Offset {POLLICI)
+
+21
+37
+
+1201 1279 1356 1120
+
+26
+42
+
+--
+
+NEE
+
+_ 46 | s0 ]
+
+EET
+30
+46 5SO
+
+95
+46
+
+LIVELLO DI RUMORE
+
+Rilevamento del rumore a vuoto (UNI EN 1553:2001):
+
+Livello di pressione acustica: LbAMm (A) dB ..
+Livello di potenza acustica: LWA (A) dB .........
+
+83 8
+98, 9

@@ -1,0 +1,15 @@
+| = passo trattore (cm)
+
+d = distanza asse anteriore dalla zavorra (cm)
+
+T = peso trattore + operatore (75 kg)
+
+Z = peso della zavorra (kg)
+
+M = peso dell'attrezzo (kg)
+
+S = sbalzo dall'asse posteriore dell'attrezzo (cm)
+
+S1 = distanza dell'assale posteriore dall'attacco parallelo (cm)
+
+S2 = distanza tra foro attacco barra e baricentro attrezzo (cm)

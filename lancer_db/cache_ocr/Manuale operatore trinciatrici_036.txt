@@ -1,0 +1,18 @@
+3.10 SOSTITUZIONE LAME
+
+Controllare periodicamente l'usura dei coltelli e dei loro elementi di fissaggio. Sostituire immediatamente tutte le parti usurate e/o
+danneggiate con ricambi originali Lancer. Procedere nel seguente modo per sostituire i coltelli usurati o rotti:
+- Parcheggiare l' attrezzo e il trattore su terreno pianeggiante.
+
+- Assicurarsi che tutti i componenti rotanti si siano fermati.
+
+Diametro iniziale del foro (F} 16,5
+
+Diametro massimo tollerato (F'} 18,5
+
+Lunghezza iniziale del coltello (L} 110
+
+Lunghezza minima accettabile {L'} 95
+
+Usura massima «T» del perno «S» 2
+

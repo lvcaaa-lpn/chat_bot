@@ -1,0 +1,52 @@
+1.1 DATI TECNICI MODELLO FISSO
+
+MODELLO
+Trattore {CV}
+
+Larghezza di lavoro {IMM}
+N. di lama (No)
+
+N. di mazza (No)
+
+Peso (kg)
+
+L {MM}
+
+RE (MM}
+
+HIMM}
+
+Compensazione (MM)
+
+SERIE JL {CENTRALE)
+
+MODELLO
+Trattore {chilowatt)
+
+N. di lama (No)
+
+E ESA CO S ESI E N E EON SA ES EI
+
+O O a a O a A EA EA EA
+
+SERIE JM (OFFSET)
+
+730 794 8369
+
+N. di mazza (No)
+Libbre di peso)
+
+34.5
+
+Offset (POLLICI)
+
+34.5
+LIVELLO DI RUMORE
+
+Rilevamento del rumore a vuoto (UNI EN 1553:2001):
+Livello di pressione acustica: LpAm (A) dB ... 83, 8
+Livello di potenza acustica: LwA (A) dB 98, 9
+
+D {POLLICE) 42
+H {POLLICE) 34 5 34.5 40
+
