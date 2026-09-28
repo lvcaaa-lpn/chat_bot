@@ -25,6 +25,7 @@ from .api import SdfApi
 from .db import Db
 from .crawler import Crawler
 from .risoluzione import risolvi_variante, telaio_completo
+from . import ricerca
 from ..testo import parole_chiave, piu_simili
 
 log = logging.getLogger("sdf")
@@ -516,6 +517,11 @@ class FornitoreSdf(Fornitore):
             "quantita": r["quantity"],
             "applicabile_a": [],
         }
+        # Trovato grazie a un sinonimo e non alla descrizione: il bot puo'
+        # dichiarare l'interpretazione ("cercato come paraolio, a catalogo
+        # e' anello tenuta").
+        if "trovato_come" in r.keys() and r["trovato_come"]:
+            art["trovato_come"] = r["trovato_come"]
         if r["abolished"]:
             art["stato"] = "abolito"
         elif not r["sellable"]:
@@ -637,7 +643,17 @@ class FornitoreSdf(Fornitore):
     CAMPI_CONTESTO = ("d.name", "g.name", "s.name")
 
     def _query(self, testo, limit=60):
-        """Cerca nelle tavole del modello corrente.
+        """Ricerca arricchita (sinonimi, contesto, misure, codici): vedi
+        fornitori/sdf/ricerca.py e arricchimento.py. Stesse colonne di
+        _query_like, piu' 'trovato_come'."""
+        return ricerca.cerca(self.db, BRANDS[self.brand], self.model_id,
+                             testo, limit=limit)
+
+    def _query_like(self, testo, limit=60):
+        """Ricerca precedente, non piu' usata dal bot: resta solo come
+        termine di confronto per debug/valuta_ricerca_sdf.py.
+
+        Cerca nelle tavole del modello corrente.
 
         Ogni parola della richiesta deve comparire da qualche parte nel
         contesto (pezzo, tavola, gruppo, sottogruppo). L'ordinamento premia

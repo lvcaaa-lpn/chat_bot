@@ -12,7 +12,7 @@ cerca_ricambio con la frase cosi' com'e' e si guarda in quale blocco
   @3  entro i primi tre
   -   non trovato (o fuori dagli 8 blocchi restituiti)
 
-Confronta la ricerca attuale (FornitoreSdf._query, LIKE su ogni parola)
+Confronta la ricerca precedente (FornitoreSdf._query_like, LIKE su ogni parola)
 con quella arricchita (fornitori/sdf/ricerca.py). Non tocca la rete: il
 fornitore viene costruito senza login, solo con il DB locale.
 
@@ -120,9 +120,10 @@ def fornitore(db, label, model_id, nome, metodo):
     f = FornitoreSdf.__new__(FornitoreSdf)
     f.db, f.brand, f.model_id, f.family_id = db, label, model_id, 0
     f.nome_macchina, f.machine = nome, None
-    if metodo == "arricchita":
-        f._query = lambda testo, limit=60: ricerca.cerca(
-            f.db, BRANDS[f.brand], f.model_id, testo, limit=limit)
+    # FornitoreSdf._query e' ormai la ricerca arricchita: per "attuale" si
+    # rimette la ricerca LIKE di prima, per confronto.
+    if metodo == "attuale":
+        f._query = f._query_like
     return f
 
 
