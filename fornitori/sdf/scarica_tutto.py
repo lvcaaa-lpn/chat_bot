@@ -287,7 +287,7 @@ class Scaricatore:
         self.errori[tipo] += 1
         log.error("modello %s %s (%s): %r", code, mid, nome, e, exc_info=e)
 
-        if isinstance(e, SessionExpired):
+        if isinstance(e, SessionExpired) and not (self.client.username and self.client.password):
             tqdm.write(f"! sessione SDF non rinnovabile: mi fermo ({e})")
             self.stop.set()
             return

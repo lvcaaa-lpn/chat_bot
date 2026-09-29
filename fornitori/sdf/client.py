@@ -314,17 +314,19 @@ class SdfClient:
             log.exception("SDF: impossibile salvare il cookie su disco")
 
     def get(self, path, brand=None, retries=2, **params):
+        cookie_usato = self.cookie
         try:
             return self._get(path, brand, retries, **params)
         except SessionExpired:
-            self._rinnova_sessione(self.cookie)
+            self._rinnova_sessione(cookie_usato)
             return self._get(path, brand, retries, **params)
 
     def post(self, path, brand=None, retries=2, **body):
+        cookie_usato = self.cookie
         try:
             return self._post(path, brand, retries, **body)
         except SessionExpired:
-            self._rinnova_sessione(self.cookie)
+            self._rinnova_sessione(cookie_usato)
             return self._post(path, brand, retries, **body)
 
     def _get(self, path, brand, retries, **params):
