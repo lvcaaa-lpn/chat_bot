@@ -49,6 +49,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlencode
 
 import requests
+from tqdm import tqdm
 
 import config
 from . import parser
@@ -108,33 +109,39 @@ def _tutte_le_pagine(client, **filtri):
 
 def fase_elenco(client, db, aggiorna=False):
     if db.fatto("elenco") and not aggiorna:
-        print("Elenco: gia' fatto (usa --aggiorna-elenco per rileggerlo)")
+        tqdm.write("Elenco: gia' fatto (usa --aggiorna-elenco per rileggerlo)")
         return
     tutte = _tutte_le_pagine(client)
     db.salva_release(tutte)
-    print(f"Elenco: {len(tutte)} release in totale", flush=True)
+    tqdm.write(f"Elenco: {len(tutte)} release in totale")
 
     vuoti = dict(showAll=1, documentCode="", serialNumber="", partNumber="")
     linee = parser.lista_json(client.esplosi("lines", **vuoti))
     db.salva_linee(linee)
-    for linea in linee:
-        cats = parser.lista_json(client.esplosi(
-            "categories", selectedLine=linea["id"], **vuoti))
-        db.salva_categorie(linea["id"], cats)
-        for cat in cats:
-            mods = parser.lista_json(client.esplosi(
-                "models", selectedLine=linea["id"], selectedCategory=cat["id"], **vuoti))
-            db.salva_modelli(linea["id"], cat["id"], mods)
-            for mod in mods:
-                chiave = f"mod:{linea['id']}:{cat['id']}:{mod['id']}"
-                if db.fatto(chiave) and not aggiorna:
-                    continue
-                rels = _tutte_le_pagine(client, selectedLine=linea["id"],
-                                        selectedCategory=cat["id"],
-                                        selectedModel=mod["id"])
-                db.lega_release_modello(linea["id"], cat["id"], mod["id"], rels)
-                db.segna_fatto(chiave)
-            print(f"  {linea['nome']} / {cat['nome']}: {len(mods)} modelli", flush=True)
+    # il totale dei modelli si scopre strada facendo: la barra si allunga
+    barra = tqdm(total=0, desc="elenco modelli", unit="modelli", dynamic_ncols=True)
+    try:
+        for linea in linee:
+            cats = parser.lista_json(client.esplosi(
+                "categories", selectedLine=linea["id"], **vuoti))
+            db.salva_categorie(linea["id"], cats)
+            for cat in cats:
+                mods = parser.lista_json(client.esplosi(
+                    "models", selectedLine=linea["id"], selectedCategory=cat["id"], **vuoti))
+                db.salva_modelli(linea["id"], cat["id"], mods)
+                barra.total += len(mods)
+                barra.set_postfix_str(f"{linea['nome'][:20]} / {cat['nome'][:20]}")
+                for mod in mods:
+                    chiave = f"mod:{linea['id']}:{cat['id']}:{mod['id']}"
+                    if not (db.fatto(chiave) and not aggiorna):
+                        rels = _tutte_le_pagine(client, selectedLine=linea["id"],
+                                                selectedCategory=cat["id"],
+                                                selectedModel=mod["id"])
+                        db.lega_release_modello(linea["id"], cat["id"], mod["id"], rels)
+                        db.segna_fatto(chiave)
+                    barra.update(1)
+    finally:
+        barra.close()
     db.segna_fatto("elenco")
 
 
@@ -144,26 +151,30 @@ def fase_elenco(client, db, aggiorna=False):
 def fase_tavole(client, db, stop, limite=None):
     da_fare = db.release_da_leggere(limite)
     if not da_fare:
-        print("Tavole: elenco gia' letto per tutte le release")
+        tqdm.write("Tavole: elenco gia' letto per tutte le release")
         return
-    print(f"Tavole: leggo l'elenco di {len(da_fare)} release", flush=True)
-    for i, r in enumerate(da_fare, 1):
-        if stop.is_set():
-            raise Interrotto()
-        try:
-            cartella, tavole = parser.viewer(client.viewer(r["id"]))
-        except (requests.HTTPError, MaschioNonRaggiungibile) as e:
-            log.warning("release %s: %s", r["id"], e)
-            continue
-        if not cartella:
-            log.warning("release %s (%s %s): cartella disegni non trovata",
-                        r["id"], r["codice_doc"], r["data"])
-        if not tavole:
-            log.warning("release %s (%s %s): nessuna tavola", r["id"],
-                        r["codice_doc"], r["data"])
-        db.salva_tavole_release(r["id"], cartella, tavole, url_disegno)
-        if i % 50 == 0 or i == len(da_fare):
-            print(f"  {i}/{len(da_fare)} release", flush=True)
+    errori = 0
+    barra = tqdm(da_fare, desc="elenco tavole", unit="release", dynamic_ncols=True)
+    try:
+        for r in barra:
+            if stop.is_set():
+                raise Interrotto()
+            try:
+                cartella, tavole = parser.viewer(client.viewer(r["id"]))
+            except (requests.HTTPError, MaschioNonRaggiungibile) as e:
+                errori += 1
+                barra.set_postfix_str(f"errori {errori}")
+                log.warning("release %s: %s", r["id"], e)
+                continue
+            if not cartella:
+                log.warning("release %s (%s %s): cartella disegni non trovata",
+                            r["id"], r["codice_doc"], r["data"])
+            if not tavole:
+                log.warning("release %s (%s %s): nessuna tavola", r["id"],
+                            r["codice_doc"], r["data"])
+            db.salva_tavole_release(r["id"], cartella, tavole, url_disegno)
+    finally:
+        barra.close()
 
 
 # ----------------------------------------------------------------------
@@ -190,47 +201,61 @@ def _scarica_tavola(client, ex, t):
 
 def fase_posizioni(client, db, stop, paralleli, limite=None):
     da_fare = db.tavole_da_scaricare(limite)
-    totale = len(da_fare)
-    if not totale:
-        print("Posizioni: nessuna tavola da scaricare")
+    if not da_fare:
+        tqdm.write("Posizioni: nessuna tavola da scaricare")
         return
-    print(f"Posizioni: {totale} tavole da scaricare, una alla volta, "
-          f"codici {paralleli} in parallelo", flush=True)
-    t0, fatte, posizioni, errori_di_fila = time.time(), 0, 0, 0
+    s = db.statistiche()
+    # come SDF: la barra parte da quanto gia' fatto nei lanci precedenti
+    # (con --limite conta solo la prova)
+    totale = len(da_fare) if limite else s["tavole"]
+    gia = 0 if limite else s["tavole_scaricate"]
+    tqdm.write(f"Posizioni: {len(da_fare)} tavole da scaricare, una alla volta, "
+               f"codici {paralleli} in parallelo, ritardo {client.delay}s")
+    barra = tqdm(total=totale, initial=gia, desc="tavole Maschio", unit="tavole",
+                 dynamic_ncols=True)
+    t0, posizioni, errori, errori_di_fila = time.time(), 0, 0, 0
     r0 = client.n_richieste
-    with ThreadPoolExecutor(paralleli) as ex:
-        for t in da_fare:
-            if stop.is_set():
-                raise Interrotto()
-            try:
-                pos = _scarica_tavola(client, ex, t)
-            except KeyboardInterrupt:
-                stop.set()      # i codici in volo si fermano alla prossima richiesta
-                raise
-            except (requests.HTTPError, MaschioNonRaggiungibile, SessioneScaduta) as e:
-                errori_di_fila += 1
-                client.delay = min(RITARDO_MASSIMO, max(client.delay, 0.05) * 1.5)
-                log.warning("tavola %s (release %s): %s -> ritardo %.2fs",
-                            t["id"], t["release"], e, client.delay)
-                if errori_di_fila >= ERRORI_DI_FILA_PER_FERMARSI:
-                    print(f"\n{errori_di_fila} errori di fila: mi fermo. "
-                          "Vedi dati/log/scarica_maschio.log", flush=True)
-                    return
-                continue
-            errori_di_fila = 0
-            if not pos:
-                log.info("tavola %s (release %s): nessuna posizione",
-                         t["id"], t["release"])
-            db.salva_posizioni(t["id"], pos)
-            fatte += 1
-            posizioni += len(pos)
-            if fatte % 100 == 0 or fatte == totale:
-                dt = time.time() - t0
-                rps = (client.n_richieste - r0) / dt
-                restano = (totale - fatte) * dt / fatte
-                print(f"  {fatte}/{totale} tavole, {posizioni} posizioni  "
-                      f"({rps:.1f} rich/s, mancano ~{restano / 3600:.1f} h)",
-                      flush=True)
+
+    def aggiorna_barra():
+        rps = (client.n_richieste - r0) / max(time.time() - t0, 1e-6)
+        barra.set_postfix_str(f"{posizioni} posizioni, {rps:.1f} rich/s, "
+                              f"ritardo {client.delay:.2f}s, errori {errori}",
+                              refresh=False)
+    try:
+        with ThreadPoolExecutor(paralleli) as ex:
+            for t in da_fare:
+                if stop.is_set():
+                    raise Interrotto()
+                try:
+                    pos = _scarica_tavola(client, ex, t)
+                except KeyboardInterrupt:
+                    stop.set()      # i codici in volo si fermano alla prossima richiesta
+                    raise
+                except (requests.HTTPError, MaschioNonRaggiungibile, SessioneScaduta) as e:
+                    errori += 1
+                    errori_di_fila += 1
+                    prima = client.delay
+                    client.delay = min(RITARDO_MASSIMO, max(client.delay, 0.05) * 1.5)
+                    log.warning("tavola %s (release %s): %s -> ritardo %.2fs",
+                                t["id"], t["release"], e, client.delay)
+                    tqdm.write(f"! tavola {t['id']}: {type(e).__name__}, "
+                               f"ritardo {prima:.2f}s -> {client.delay:.2f}s")
+                    aggiorna_barra()
+                    if errori_di_fila >= ERRORI_DI_FILA_PER_FERMARSI:
+                        tqdm.write(f"! {errori_di_fila} errori di fila: mi fermo. "
+                                   "Vedi dati/log/scarica_maschio.log")
+                        return
+                    continue
+                errori_di_fila = 0
+                if not pos:
+                    log.info("tavola %s (release %s): nessuna posizione",
+                             t["id"], t["release"])
+                db.salva_posizioni(t["id"], pos)
+                posizioni += len(pos)
+                aggiorna_barra()
+                barra.update(1)
+    finally:
+        barra.close()
 
 
 # ----------------------------------------------------------------------
@@ -242,41 +267,53 @@ def _prefisso(client, db, prefisso, stop):
     letti = parser.anagrafica(html)
     db.salva_ricambi(letti)
     n, p = len(letti), 2
-    while p <= pagine:
-        if stop.is_set():
-            raise Interrotto()
-        try:
-            html = client.anagrafica_pagina(p)
-        except SessioneScaduta:
-            # nuovo login = ricerca persa: la si rifa' e si riprende da p
-            client.anagrafica_cerca(prefisso)
-            continue
-        corrente, _, _ = parser.paginazione(html)
-        if corrente != p:
-            log.warning("anagrafica %s: chiesta pagina %d, ricevuta %d: rifaccio "
-                        "la ricerca", prefisso, p, corrente)
-            client.anagrafica_cerca(prefisso)
-            continue
-        letti = parser.anagrafica(html)
-        db.salva_ricambi(letti)
-        n += len(letti)
-        p += 1
-        if p % 50 == 0:
-            print(f"    {prefisso}: pagina {p}/{pagine}", flush=True)
+    barra = tqdm(total=pagine, initial=1, desc=f"  prefisso {prefisso}", unit="pagine",
+                 position=1, leave=False, dynamic_ncols=True)
+    try:
+        while p <= pagine:
+            if stop.is_set():
+                raise Interrotto()
+            try:
+                html = client.anagrafica_pagina(p)
+            except SessioneScaduta:
+                # nuovo login = ricerca persa: la si rifa' e si riprende da p
+                client.anagrafica_cerca(prefisso)
+                continue
+            corrente, _, _ = parser.paginazione(html)
+            if corrente != p:
+                log.warning("anagrafica %s: chiesta pagina %d, ricevuta %d: rifaccio "
+                            "la ricerca", prefisso, p, corrente)
+                client.anagrafica_cerca(prefisso)
+                continue
+            letti = parser.anagrafica(html)
+            db.salva_ricambi(letti)
+            n += len(letti)
+            p += 1
+            barra.update(1)
+    finally:
+        barra.close()
     if record and n != record:
         log.warning("anagrafica %s: attesi %d codici, letti %d", prefisso, record, n)
     return n, record
 
 
 def fase_anagrafica(client, db, stop, aggiorna=False):
-    print("Anagrafica ricambi", flush=True)
-    for pre in PREFISSI:
-        chiave = f"ana:{pre}"
-        if db.fatto(chiave) and not aggiorna:
-            continue
-        n, record = _prefisso(client, db, pre, stop)
-        db.segna_fatto(chiave)
-        print(f"  {pre}: {n} codici (il portale ne dichiara {record})", flush=True)
+    gia = 0 if aggiorna else sum(db.fatto(f"ana:{p}") for p in PREFISSI)
+    barra = tqdm(total=len(PREFISSI), initial=gia, desc="anagrafica", unit="prefissi",
+                 position=0, dynamic_ncols=True)
+    codici = 0
+    try:
+        for pre in PREFISSI:
+            chiave = f"ana:{pre}"
+            if db.fatto(chiave) and not aggiorna:
+                continue
+            n, record = _prefisso(client, db, pre, stop)
+            db.segna_fatto(chiave)
+            codici += n
+            barra.set_postfix_str(f"{codici} codici letti", refresh=False)
+            barra.update(1)
+    finally:
+        barra.close()
 
 
 # ----------------------------------------------------------------------
@@ -302,8 +339,9 @@ def _configura_log():
     h = logging.FileHandler(cartella / "scarica_maschio.log", encoding="utf-8")
     h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     radice = logging.getLogger()
+    # solo su file, come SDF: righe di log a schermo romperebbero le barre
+    radice.handlers[:] = [h]
     radice.setLevel(logging.INFO)
-    radice.addHandler(h)
 
 
 def main():
