@@ -207,6 +207,37 @@ def parse_modello(html):
     return {"nome": nome or _titolo_pagina(s), "slug": slug, "tavole": tavole}
 
 
+def parse_allegati(html):
+    """Documenti allegati alla pagina di un prodotto (sezione "Documenti").
+
+    Alcuni prodotti (linee Agritalia, alcuni motori Yanmar/Mitsubishi) non
+    hanno tavole navigabili ma solo un catalogo PDF. La nota del documento
+    contiene spesso una regola per ordinare, es. "aggiungere al codice il
+    prefisso WAG. ELIMINARE eventuali zeri...": senza, un codice letto dal
+    PDF non e' quello da ordinare. Va quindi conservata per intero.
+    """
+    s = _soup(html)
+    out = []
+    for art in s.select("section.attachment article.singledocument"):
+        url = ""
+        m = re.search(r"window\.open\(\s*['\"]([^'\"]+)['\"]", art.get("onclick", ""))
+        if m:
+            url = m.group(1)
+        elif art.select_one("a[href]"):
+            url = art.select_one("a[href]")["href"]
+        info = _testo(art.select_one(".doc_info"))
+        tipo = re.search(r"Tipo\s*:\s*(\S+)", info)
+        dim = re.search(r"Dimensione\s*:\s*([\d.,]+\s*\w+)", info)
+        out.append({
+            "nome": _testo(art.select_one("h3")),
+            "url": _percorso(url) if url.startswith(("http", "/")) else url,
+            "tipo": tipo.group(1) if tipo else "",
+            "dimensione": dim.group(1) if dim else "",
+            "nota": _testo(art.select_one(".doc_abstract")),
+        })
+    return out
+
+
 # ----------------------------------------------------------------------
 # Tavola -> righe
 # ----------------------------------------------------------------------

@@ -32,6 +32,7 @@ claude.txt
 # residuo pre-fix percorso DB (vedi CLAUDE.md changelog #6): il DB SDF
 # vero vive in fornitori/sdf/sdf.db, questo in root non serve
 /sdf.db
+fornitori/carraro/carraro.db
 
 # materiale di analisi locale (glossario sinonimi grezzo, script una tantum
 # di verifica catalogo): utile solo qui, non serve al bot ne' all'azienda
@@ -49,3 +50,18 @@ fornitori/sdf/sdf.db
 # file di LANCER
 LANCER/
 LANCER.zip
+
+# credenziali Maschio
+dati/maschio_username.txt
+dati/maschio_password.txt
+
+# DB e copie locali
+fornitori/maschio/maschio.db
+fornitori/sdf/sdf_old.db
+
+# output di analisi una tantum
+dati/carraro_misura*.json
+dati/foto_ricerca_sdf_*.json
+dati/sdf_confronto_sito.json
+dati/sdf_verifica_completezza.json
+dati/debug_*.html

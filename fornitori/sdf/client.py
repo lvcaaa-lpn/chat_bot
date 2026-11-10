@@ -1,10 +1,13 @@
 """Client HTTP per l'API CRIC di SDF (eparts.sdfgroup.com)."""
+import contextlib
 import json
 import logging
 import os
+import random
+import re
 import threading
 import time
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import ssl
 from pathlib import Path
@@ -12,6 +15,7 @@ import certifi
 from requests.adapters import HTTPAdapter
 
 import requests
+import urllib3.connectionpool
 
 import config
 
@@ -30,6 +34,9 @@ BRANDS = {
     "DEUTZ-FAHR": "DEUT",
     "HURLIMANN": "HURL",
     "LAMBORGHINI": "LAMBORGHINI",
+    # visibili solo con l'account extranet (dal 2026-11-10)
+    "GREGOIRE": "GREG",
+    "VITIBOT": "GPRO",
 }
 
 # valori ammessi per il parametro searchType
@@ -67,12 +74,11 @@ def _sessione_http():
     return s
 
 # ----------------------------------------------------------------------
-# Login automatico (Auth0 -> store.sdfgroup.com -> ita.store.sdfgroup.com
-# -> eparts.sdfgroup.com). Ricostruito da un HAR di login reale con
-# debug/analizza_har_sdf.py: vedi CLAUDE.md, sezione "Guida: implementare
-# il login automatico SDF", per la spiegazione passo-passo. Se SDF cambia
-# il flusso (nuova cattura HAR mostra una catena diversa), questa e'
-# l'unica funzione da aggiornare.
+# Login automatico (extranet SDF: ADFS -> www.extranetsdf.com -> store ->
+# ita.store -> eparts). Ricostruito da HAR di login reali (newlogin*.har)
+# e collaudato con debug/prova_login_extranet.py. Dal 2026-11-10 sostituisce
+# il vecchio flusso Auth0 (account parziale, senza Gregoire/Vitibot): il
+# vecchio flusso e' descritto in CLAUDE.md come riferimento storico.
 #
 # E' un meccanismo AGGIUNTIVO: il login manuale via cookie (SDF_COOKIE /
 # dati/cookie.txt) resta il percorso primario quando un cookie e' gia'
@@ -80,128 +86,208 @@ def _sessione_http():
 # questo flusso dovesse rompersi con un cambiamento del sito SDF.
 # ----------------------------------------------------------------------
 
-AUTH0_DOMAIN = "https://sdfdataplatform.eu.auth0.com"
+EXTRANET = "https://www.extranetsdf.com"
+ADFS_ORIGIN = "https://logon.extranetsdf.com"
+PONTE_STORE = f"{EXTRANET}/Dis/Disstart.nsf/redirectAgent?OpenAgent&TIPO=STORE"
 STORE = "https://store.sdfgroup.com"
 ITA_STORE = "https://ita.store.sdfgroup.com"
 EPARTS_LOGIN_URL = "https://eparts.sdfgroup.com/explorer/jwt/cric.html"
 
-_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36")
+_HEADER_BROWSER = {
+    "User-Agent": _UA,
+    "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
+               "image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"),
+    "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Upgrade-Insecure-Requests": "1",
+    "sec-ch-ua": '"Not:A-Brand";v="8", "Chromium";v="156", "Google Chrome";v="156"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-User": "?1",
+}
+
+# piccole pause tra i passi, come un browser: il login avviene di rado
+# (all'avvio e quando la sessione scade), quindi costano pochi secondi
+_PAUSA_DIGITAZIONE = (2, 4)
+_PAUSA_AUTOINVIO = (0.3, 1.0)
+
+_LINK_STORE = re.compile(r"https://store\.sdfgroup\.com/extranet\?[^\"'\s<>]+")
 
 
-def _location(r):
-    """Location di una risposta di redirect, risolta rispetto all'URL richiesto."""
-    loc = r.headers.get("Location")
-    if not loc:
-        raise LoginError(f"login SDF: atteso redirect da {r.url}, "
-                          f"ricevuto {r.status_code} senza Location")
-    return urljoin(r.url, loc)
+def _pausa(intervallo):
+    time.sleep(random.uniform(*intervallo))
 
 
-def _campi_form_nascosto(html):
-    """Estrae i campi <input> nascosti del form auto-inviante di una
-    pagina response_mode=form_post (usato da Auth0 e da store/ita.store
-    per passare code/jwt al passo successivo)."""
+def _senza_porta_default(url):
+    """'https://host:443/...' -> 'https://host/...', come fa il browser
+    (l'ADFS dopo il login rimanda a un URL con ':443' esplicito)."""
+    p = urlparse(url)
+    if p.scheme == "https" and p.netloc.endswith(":443"):
+        return url.replace(p.netloc, p.netloc[:-4], 1)
+    return url
+
+
+@contextlib.contextmanager
+def _url_intatti():
+    """Disattiva la ri-codifica degli URL di urllib3 per una richiesta.
+
+    urllib3 (connectionpool._encode_target) mette in maiuscolo le codifiche
+    '%xx' ('%2f' -> '%2F'). L'URL dell'ADFS (?SAMLRequest=...&Signature=...)
+    e' firmato sulla stringa esatta: alterato cosi', l'ADFS accetta le
+    credenziali ma poi mostra una pagina "Errore" generica invece di
+    emettere la SAMLResponse. Gli URL qui arrivano dal sito stesso, quindi
+    sono gia' validi.
+
+    Nota: e' una sostituzione temporanea a livello di modulo. Le richieste
+    REST di altri thread che partono in quei pochi istanti la attraversano
+    senza danni (i loro URL sono gia' codificati da requests); i login sono
+    serializzati da SdfClient._sessione_lk."""
+    originale = urllib3.connectionpool._encode_target
+    urllib3.connectionpool._encode_target = lambda target: target
+    try:
+        yield
+    finally:
+        urllib3.connectionpool._encode_target = originale
+
+
+def _vai(s, metodo, url, *, data=None, headers=None, segui=True,
+         timeout=30, max_redirect=10):
+    """Come s.get/s.post, ma invia gli URL ESATTAMENTE come li da' il sito
+    (requests li normalizzerebbe, vedi _url_intatti) e segue i redirect a
+    mano, usando la Location cosi' com'e'."""
+    storia = []
+    for _ in range(max_redirect + 1):
+        req = s.prepare_request(requests.Request(metodo, url, data=data, headers=headers))
+        req.url = url
+        with _url_intatti():
+            r = s.send(req, allow_redirects=False, timeout=timeout)
+        if r.status_code == 429 or r.status_code >= 500:
+            p = urlparse(r.url)
+            raise LoginError(f"login SDF: il portale ha risposto {r.status_code} "
+                             f"su {p.netloc}{p.path}")
+        if not segui or r.status_code not in (301, 302, 303, 307, 308):
+            r.history = storia
+            return r
+        storia.append(r)
+        url = _senza_porta_default(urljoin(r.url, r.headers["Location"]))
+        if r.status_code in (301, 302, 303):     # come il browser: POST -> GET
+            metodo, data = "GET", None
+        headers = {"Referer": r.url}
+    raise LoginError("login SDF: troppi redirect")
+
+
+def _form_con(html, base_url, *, campo=None, password=False):
+    """Trova il <form> che contiene un certo campo (o un input password) e
+    ritorna (action assoluta, dict dei campi con i valori di default);
+    (None, None) se non c'e'."""
     if BeautifulSoup is None:
         raise LoginError("login SDF: beautifulsoup4 non installato")
-    form = BeautifulSoup(html, "lxml").find("form")
-    if not form:
-        raise LoginError("login SDF: pagina inattesa, nessun <form> trovato "
-                          "(il sito potrebbe aver cambiato il flusso di login)")
-    return {inp.get("name"): inp.get("value", "")
-            for inp in form.find_all("input") if inp.get("name")}
+    for form in BeautifulSoup(html, "lxml").find_all("form"):
+        inputs = form.find_all("input")
+        if campo and not any(i.get("name") == campo for i in inputs):
+            continue
+        if password and not any((i.get("type") or "").lower() == "password" for i in inputs):
+            continue
+        campi = {}
+        for i in inputs:
+            nome = i.get("name")
+            if not nome:
+                continue
+            tipo = (i.get("type") or "text").lower()
+            if tipo in ("checkbox", "radio") and not i.has_attr("checked"):
+                continue
+            campi[nome] = i.get("value", "")
+        return urljoin(base_url, form.get("action") or base_url), campi
+    return None, None
 
 
 def login_automatico(username, password, timeout=30):
-    """Esegue l'intero login (10 passi, vedi CLAUDE.md) e ritorna il
-    cookie 'JSESSIONID=...' pronto da passare a SdfClient(cookie=...).
+    """Esegue l'intero login extranet (7 passi, vedi CLAUDE.md) e ritorna
+    il cookie 'JSESSIONID=...' pronto da passare a SdfClient(cookie=...).
 
     Solleva LoginError se un passo qualsiasi non si comporta come atteso
-    (credenziali sbagliate, captcha comparso, sito cambiato, ecc.) — non
-    tenta di indovinare, si ferma con un messaggio che indica il passo.
+    (credenziali sbagliate, sito cambiato, ecc.): non tenta di indovinare,
+    si ferma con un messaggio che indica il passo. Per diagnosticare un
+    errore: debug/prova_login_extranet.py --solo-login --dettaglio.
     """
     if not username or not password:
         raise LoginError("login SDF: username o password mancanti")
 
     s = _sessione_http()
-    s.headers.update({"User-Agent": _UA})
+    s.headers.update(_HEADER_BROWSER)
 
-    # 1. store.sdfgroup.com avvia il login OIDC verso Auth0
-    r = s.get(f"{STORE}/auth0", allow_redirects=False, timeout=timeout)
+    def vai(*a, **k):
+        return _vai(s, *a, timeout=timeout, **k)
+
+    # 1. extranet -> redirect fino al form di login ADFS (URL firmato)
+    r = vai("GET", EXTRANET + "/")
+    action, campi = _form_con(r.text, r.url, password=True)
+    if not action:
+        raise LoginError("login SDF passo 1 (extranet): form di login ADFS non trovato")
+    nome_user = next((k for k in campi if "user" in k.lower()), None)
+    nome_pwd = next((k for k in campi if "password" in k.lower()), None)
+    if not nome_user or not nome_pwd:
+        raise LoginError("login SDF passo 1: campi username/password non "
+                         f"riconosciuti: {list(campi)}")
+
+    # 2. credenziali -> (redirect) pagina auto-inviante con la SAMLResponse
+    _pausa(_PAUSA_DIGITAZIONE)
+    campi[nome_user] = username
+    campi[nome_pwd] = password
+    r = vai("POST", action, data=campi, headers={"Referer": r.url, "Origin": ADFS_ORIGIN})
+    action, campi = _form_con(r.text, r.url, campo="SAMLResponse")
+    if not action:
+        if _form_con(r.text, r.url, password=True)[0]:
+            raise LoginError("login SDF passo 2 (ADFS): credenziali rifiutate")
+        raise LoginError("login SDF passo 2 (ADFS): SAMLResponse non ricevuta")
+
+    # 3. SAMLResponse all'extranet (names.nsf?SAMLLogin) -> LtpaToken
+    _pausa(_PAUSA_AUTOINVIO)
+    r = vai("POST", action, data=campi, headers={"Referer": r.url})
+
+    # 4. ponte extranet -> store: risponde 200 con un redirect JavaScript
+    #    verso store.sdfgroup.com/extranet?KEY=..., che ha il form jwt
+    _pausa(_PAUSA_AUTOINVIO)
+    r = vai("GET", PONTE_STORE, headers={"Referer": EXTRANET + "/"})
+    action, campi = _form_con(r.text, r.url, campo="jwt")
+    if not action:
+        m = _LINK_STORE.search(r.text)
+        if not m:
+            raise LoginError("login SDF passo 4 (redirectAgent STORE): link allo "
+                             "store non trovato (sessione extranet non valida?)")
+        r = vai("GET", m.group(0).replace("&amp;", "&"), headers={"Referer": EXTRANET + "/"})
+        action, campi = _form_con(r.text, r.url, campo="jwt")
+        if not action:
+            raise LoginError("login SDF passo 4 (store/extranet): JWT non trovato")
+
+    # 5. autentica il sito nopCommerce (ita.store.sdfgroup.com)
+    _pausa(_PAUSA_AUTOINVIO)
+    r = vai("POST", action, data=campi, headers={"Referer": r.url}, segui=False)
     if r.status_code != 302:
-        raise LoginError(f"login SDF passo 1 (/auth0): atteso 302, ricevuto {r.status_code}")
-    url_authorize = _location(r)
+        raise LoginError("login SDF passo 5 (ita.store/login): atteso 302, "
+                         f"ricevuto {r.status_code}")
 
-    # 2. Auth0 rimanda alla pagina di login con un proprio 'state' interno
-    r = s.get(url_authorize, allow_redirects=False, timeout=timeout)
-    if r.status_code != 302:
-        raise LoginError(f"login SDF passo 2 (/authorize): atteso 302, ricevuto {r.status_code}")
-    url_login = _location(r)
+    # 6. catalogo ricambi -> pagina con un nuovo JWT per eparts
+    _pausa(_PAUSA_AUTOINVIO)
+    r = vai("GET", f"{ITA_STORE}/eparts/spareparts")
+    action, campi = _form_con(r.text, r.url, campo="jwt")
+    if not action:
+        raise LoginError("login SDF passo 6 (eparts/spareparts): JWT non trovato")
 
-    # 3. pagina di login vera e propria (serve solo a far impostare ad
-    #    Auth0 gli eventuali cookie di sessione della transazione)
-    s.get(url_login, timeout=timeout)
-
-    # 4. invio credenziali
-    r = s.post(f"{AUTH0_DOMAIN}/u/login", data={
-        "state": _stato_da_query(url_login),
-        "username": username,
-        "password": password,
-    }, allow_redirects=False, timeout=timeout)
-    if r.status_code != 302:
-        raise LoginError("login SDF passo 4 (/u/login): credenziali rifiutate o "
-                          f"pagina di login cambiata (atteso 302, ricevuto {r.status_code})")
-    url_resume = _location(r)
-
-    # 5. /authorize/resume -> pagina auto-inviante con code + state originale
-    r = s.get(url_resume, allow_redirects=False, timeout=timeout)
-    campi = _campi_form_nascosto(r.text)
-    if "code" not in campi or "state" not in campi:
-        raise LoginError("login SDF passo 5 (/authorize/resume): campi "
-                          "'code'/'state' mancanti nel form di risposta")
-
-    # 6. consegna code+state a store.sdfgroup.com: lo autentica
-    r = s.post(f"{STORE}/signin-oidc", data=campi, allow_redirects=False, timeout=timeout)
-    if r.status_code != 302:
-        raise LoginError(f"login SDF passo 6 (/signin-oidc): atteso 302, ricevuto {r.status_code}")
-
-    # 7. store.sdfgroup.com (ora autenticato) genera un JWT per ita.store
-    r = s.get(f"{STORE}/auth0", timeout=timeout)
-    campi = _campi_form_nascosto(r.text)
-    jwt1 = campi.get("jwt")
-    if not jwt1:
-        raise LoginError("login SDF passo 7 (/auth0): JWT non trovato nella risposta")
-
-    # 8. autentica il sito nopCommerce vero e proprio (ita.store.sdfgroup.com)
-    r = s.post(f"{ITA_STORE}/login", data={"jwt": jwt1},
-               headers={"Referer": f"{STORE}/"}, allow_redirects=False, timeout=timeout)
-    if r.status_code != 302:
-        raise LoginError(f"login SDF passo 8 (ita.store/login): atteso 302, ricevuto {r.status_code}")
-
-    # 9. richiesta del catalogo ricambi -> pagina con un nuovo JWT per eparts
-    r = s.get(f"{ITA_STORE}/eparts/spareparts", timeout=timeout)
-    campi = _campi_form_nascosto(r.text)
-    jwt2 = campi.get("jwt")
-    if not jwt2:
-        raise LoginError("login SDF passo 9 (eparts/spareparts): JWT non trovato")
-
-    # 10. consegna il JWT a eparts.sdfgroup.com: la risposta imposta JSESSIONID
-    s.post(EPARTS_LOGIN_URL, data={"jwt": jwt2},
-           headers={"Referer": f"{ITA_STORE}/"}, timeout=timeout)
-    jsessionid = s.cookies.get("JSESSIONID")
+    # 7. JWT a eparts.sdfgroup.com: la risposta imposta JSESSIONID
+    _pausa(_PAUSA_AUTOINVIO)
+    vai("POST", EPARTS_LOGIN_URL, data=campi, headers={"Referer": f"{ITA_STORE}/"})
+    jsessionid = next((c.value for c in s.cookies
+                       if c.name == "JSESSIONID" and "eparts" in c.domain), None)
     if not jsessionid:
-        raise LoginError("login SDF passo 10 (eparts jwt/cric.html): "
-                          "JSESSIONID non impostato dopo il login")
+        raise LoginError("login SDF passo 7 (eparts jwt/cric.html): "
+                         "JSESSIONID non impostato dopo il login")
 
     log.info("SDF: login automatico riuscito per %s", username)
     return f"JSESSIONID={jsessionid}"
-
-
-def _stato_da_query(url):
-    from urllib.parse import urlparse, parse_qs
-    stato = parse_qs(urlparse(url).query).get("state", [None])[0]
-    if not stato:
-        raise LoginError(f"login SDF: parametro 'state' non trovato in {url}")
-    return stato
 
 
 class SdfClient:
@@ -236,7 +322,7 @@ class SdfClient:
         self.s.headers.update({
             "Cookie": self.cookie,
             "Accept-Language": f"{lang},it;q=0.9",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "User-Agent": _UA,
         })
 
     # ------------------------------------------------------------------

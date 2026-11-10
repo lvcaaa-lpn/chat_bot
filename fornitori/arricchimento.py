@@ -1,14 +1,21 @@
 """
-Dati di arricchimento del catalogo SDF, scritti a mano (non generati da un
-LLM a runtime): per ogni "tipo" di ricambio, i nomi con cui lo chiama un
-cliente. Stessa tecnica del bot LANCER (bot_lancer/lancer_db/arricchimento.py),
-adattata a SDF.
+Vocabolario COMUNE di arricchimento dei cataloghi ricambi, scritto a mano
+(non generato da un LLM a runtime): per ogni "tipo" di ricambio, i nomi con
+cui lo chiama un cliente. Stessa tecnica del bot LANCER
+(bot_lancer/lancer_db/arricchimento.py). Nato sul catalogo SDF (e collaudato
+lì dall'azienda), vale per tutte le marche: e' il vocabolario dei CLIENTI e
+dei ricambi agricoli, non di un fornitore. Lo usa fornitori/ricerca.py.
 
-Perche' serve: le descrizioni SDF sono in italiano ma tecniche e spesso
-generiche ("anello tenuta speciale", "pomolo", "tirante", "dispositivo
-avviam."), mentre il cliente scrive "paraolio", "pomello", "filo
-dell'acceleratore", "blocchetto accensione". Nei test dell'azienda
-(dati/conversazioni_4.db) quasi tutti i pezzi "non trovati" erano a
+Una marca puo' aggiungere regole e contesti propri (le sue descrizioni
+hanno un altro lessico, es. "Anello OR 4087") in fornitori/<marca>/
+arricchimento.py, passandoli a ricerca.Vocabolario: vengono controllati
+PRIMA di quelli comuni. Qui resta solo cio' che vale per tutti.
+
+Perche' serve: le descrizioni dei cataloghi sono in italiano ma tecniche e
+spesso generiche ("anello tenuta speciale", "pomolo", "tirante",
+"dispositivo avviam."), mentre il cliente scrive "paraolio", "pomello",
+"filo dell'acceleratore", "blocchetto accensione". Nei test dell'azienda
+su SDF (dati/conversazioni_4.db) quasi tutti i pezzi "non trovati" erano a
 catalogo, solo chiamati in un altro modo.
 
 Struttura:
@@ -30,11 +37,11 @@ Struttura:
 
 Il "tipo" e' la descrizione senza misure, sigle e lato (vedi
 ricerca.tipo_di): "anello tenuta speciale 25 x 32 x 7" -> "anello tenuta
-speciale". Il catalogo SDF cresce a ogni modello scaricato: i tipi nuovi
-che non corrispondono a nessuna regola vengono comunque cercati con la
-loro descrizione originale, e si possono elencare con
+speciale". I tipi che non corrispondono a nessuna regola vengono comunque
+cercati con la loro descrizione originale, e si possono elencare per
+marca (vedi Vocabolario.tipi_senza_regola), es. per SDF con
   ./venv/Scripts/python.exe -m fornitori.sdf.ricerca --senza-regola
-per aggiungere la regola qui.
+per aggiungere la regola qui (se vale per tutti) o nella marca.
 """
 
 CONCETTI = {

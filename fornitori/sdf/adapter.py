@@ -26,6 +26,7 @@ from .db import Db
 from .crawler import Crawler
 from .risoluzione import risolvi_variante, telaio_completo
 from . import ricerca
+from .. import ricerca as motore_ricerca
 from ..testo import parole_chiave, piu_simili
 
 log = logging.getLogger("sdf")
@@ -382,139 +383,30 @@ class FornitoreSdf(Fornitore):
                     "messaggio": f"Nessun ricambio SDF per '{testo}' "
                                  f"su {self.nome_macchina}."}
 
-        per_tavola = {}
-        for r in righe:
-            per_tavola.setdefault(r["revision_id"], []).append(r)
-
-        # Piu' revisioni della stessa tavola con gli stessi pezzi trovati
-        # (cambia solo il range di telaio) valgono un blocco solo: si
-        # tiene la prima e se ne uniscono i range di telaio nella nota.
-        unite = {}
-        for rev, elenco in per_tavola.items():
-            p = elenco[0]
-            chiave = (p["group_name"], p["subgroup_name"], p["drawing_name"], p["notes"],
-                      tuple(sorted((r["code"], r["position"], r["quantity"]) for r in elenco)))
-            if chiave in unite:
-                unite[chiave]["range"].append(p["tractor_sn_range"])
-            else:
-                unite[chiave] = {"rev": rev, "elenco": elenco,
-                                 "range": [p["tractor_sn_range"]]}
-
-        # A pari rilevanza/pertinenza (frequente: sono punteggi grezzi),
-        # l'ordine tra tavole NON puo' dipendere dall'id interno SDF della
-        # tavola (revision_id): non ha alcun legame con quanto la tavola
-        # sia pertinente, ed e' quello che faceva restare fuori dal tetto
-        # MAX_BLOCCHI tavole importanti per puro caso (es. FRENI ANTERIORI
-        # scartata a favore di una valvola dell'impianto frenatura, a
-        # parita' di punteggio). Si aggiunge un terzo criterio, quante
-        # righe di QUESTA tavola la ricerca ha agganciato: una tavola dove
-        # 2 pezzi diversi rispondono alla ricerca e' piu' centrale di una
-        # dove ne risponde 1 solo. Ultimo pareggio: nome tavola, cosi'
-        # l'ordine e' sempre riproducibile e spiegabile, mai arbitrario.
-        def punteggio_tavola(u):
-            el = u["elenco"]
-            return (max(r["rilevanza"] for r in el),
-                    max(r["pertinenza_tavola"] for r in el),
-                    len(el),
-                    el[0]["drawing_name"] or "")
-
-        ordinate = sorted(unite.values(), key=punteggio_tavola, reverse=True)
-
-        blocchi = []
-        for u in ordinate[:self.MAX_BLOCCHI]:
-            rev, elenco = u["rev"], u["elenco"]
-            p = elenco[0]
-            contesto = " / ".join(x for x in (p["group_name"],
-                                              p["subgroup_name"],
-                                              p["drawing_name"]) if x)
-            range_telaio = ", ".join(x for x in u["range"] if x)
-            nota = " - ".join(x for x in (p["notes"], range_telaio) if x)
-
-            # Il testo cercato puo' agganciare solo alcune righe della
-            # tavola: le altre righe vicine per posizione sono spesso
-            # altri componenti dello stesso gruppo meccanico (es. le
-            # altre tenute di uno stesso gruppo mozzo-disco-pistone), utili
-            # se il cliente sta revisionando l'intero gruppo. Si e' visto
-            # in sessione che lasciare all'LLM il compito di NOTARE da
-            # solo questi pezzi dentro una lista JSON e' inaffidabile
-            # (stesso identico input, a volte li usa a volte no) - quindi
-            # li segnaliamo gia' pronti in una frase, e lasciamo al
-            # modello solo la decisione se e come usarla nella risposta.
-            trovati = elenco[:10]
-            codici_trovati = {r["code"] for r in trovati}
-            extra = self._pezzi_vicini(rev, trovati, codici_trovati)
-
-            nota_correlati = [
-                {"codice": a["code"],
-                 "descrizione": a["description"] or "",
-                 "posizione": a["position"] or ""}
-                for a in extra]
-
-            blocchi.append({
-                "contesto": contesto,
-                "nota": nota or "",
-                "articoli": [self._articolo(a) for a in trovati],
-                "nota_correlati": nota_correlati,
-            })
-
+        # raggruppamento per tavola, ordine dei blocchi, pezzi vicini: e'
+        # logica comune a tutte le marche (fornitori/ricerca.py); qui solo
+        # come leggere una tavola SDF e come presentare un articolo SDF
+        esito = motore_ricerca.componi_blocchi(
+            [dict(r) for r in righe], self._pezzi_tavola, self._articolo)
         return {"marca": self.marca, "macchina": self.nome_macchina,
-                "ambiguo": False, "blocchi": blocchi,
-                "totale_codici": len({r["code"] for r in righe})}
-
-    # A differenza del numero di righe extra per blocco (dove tagliare
-    # aiuta, si e' visto che riduce solo rumore), tagliare il NUMERO di
-    # blocchi e' rischioso: il punteggio di _query mette spesso a pari
-    # merito una tavola pertinente e una che ha agganciato la ricerca solo
-    # di striscio (stesso motivo descritto li' - vedi commento su
-    # 'rilevanza'), quindi l'ordine tra i blocchi non è affidabile quanto
-    # sembra. Si e' visto in sessione un caso reale con la tavola giusta
-    # ottava su nove: un tetto a 8 l'avrebbe esclusa. Restava gia' a 8
-    # nella versione precedente di questo codice - lo teniamo alto.
-    MAX_BLOCCHI = 8
-    MAX_EXTRA_PER_BLOCCO = 15
-
-    @staticmethod
-    def _numero_posizione(position):
-        m = re.match(r"\d+", position or "")
-        return int(m.group()) if m else None
-
-    def _pezzi_vicini(self, revision_id, trovati, codici_trovati):
-        """Righe della stessa tavola non agganciate dalla ricerca
-        testuale, ordinate per vicinanza di posizione ai pezzi trovati
-        (numero di posizione principale, es. '11.2' -> 11) e limitate a
-        MAX_EXTRA_PER_BLOCCO: una via di mezzo tra 'solo la stessa
-        posizione esatta' (troppo stretto) e 'tutta la tavola' (troppo
-        rumore su tavole grandi)."""
-        posizioni_trovate = {n for n in
-                              (self._numero_posizione(r["position"]) for r in trovati)
-                              if n is not None}
-        tavola = self._pezzi_tavola(revision_id)
-        extra = [r for r in tavola if r["code"] not in codici_trovati]
-        if posizioni_trovate:
-            def distanza(r):
-                n = self._numero_posizione(r["position"])
-                if n is None:
-                    return 10 ** 9
-                return min(abs(n - pt) for pt in posizioni_trovate)
-            extra.sort(key=distanza)
-        return extra[:self.MAX_EXTRA_PER_BLOCCO]
+                "ambiguo": False, **esito}
 
     def _pezzi_tavola(self, revision_id):
-        """Tutte le righe della tavola, per calcolare i vicini in
-        _pezzi_vicini - non usata direttamente nella risposta."""
+        """Tutte le righe della tavola nel formato standard del motore, per
+        i pezzi vicini - non usata direttamente nella risposta."""
         return self.db.query(
-            """SELECT code, description, position, quantity, price,
-                      sellable, replaced, abolished
+            """SELECT code AS codice, description AS descrizione,
+                      position AS posizione, quantity AS quantita
                FROM part WHERE revision_id = ? ORDER BY position""",
             (revision_id,))
 
     def _articolo(self, r):
         art = {
-            "posizione": r["position"] or "",
-            "codice": r["code"],
-            "descrizione": r["description"] or "",
+            "posizione": r["posizione"] or "",
+            "codice": r["codice"],
+            "descrizione": r["descrizione"] or "",
             "prezzo": r["price"] if r["price"] else None,
-            "quantita": r["quantity"],
+            "quantita": r["quantita"],
             "applicabile_a": [],
         }
         # Trovato grazie a un sinonimo e non alla descrizione: il bot puo'
@@ -531,7 +423,7 @@ class FornitoreSdf(Fornitore):
                 {"codice": s["new_code"], "descrizione": s["description"]}
                 for s in self.db.query(
                     "SELECT new_code, description FROM substitution WHERE old_code=?",
-                    (r["code"],))]
+                    (r["codice"],))]
         return art
 
     # ------------------------------------------------------------ cache
@@ -644,8 +536,9 @@ class FornitoreSdf(Fornitore):
 
     def _query(self, testo, limit=60):
         """Ricerca arricchita (sinonimi, contesto, misure, codici): vedi
-        fornitori/sdf/ricerca.py e arricchimento.py. Stesse colonne di
-        _query_like, piu' 'trovato_come'."""
+        fornitori/ricerca.py (motore comune) e fornitori/arricchimento.py.
+        Stesse colonne di _query_like (formato standard del motore), piu'
+        'trovato_come'."""
         return ricerca.cerca(self.db, BRANDS[self.brand], self.model_id,
                              testo, limit=limit)
 
@@ -688,11 +581,13 @@ class FornitoreSdf(Fornitore):
         args += [BRANDS[self.brand], self.model_id, limit]
 
         return self.db.query(f"""
-            SELECT p.code, p.description, p.position, p.quantity, p.price,
+            SELECT p.code AS codice, p.description AS descrizione,
+                   p.position AS posizione, p.quantity AS quantita, p.price,
                    p.sellable, p.replaced, p.abolished,
-                   d.revision_id, d.name AS drawing_name, d.notes,
-                   d.tractor_sn_range, d.preview_url,
-                   g.name AS group_name, s.name AS subgroup_name,
+                   d.revision_id AS tavola, d.name AS nome_tavola,
+                   d.notes AS nota_tavola, d.tractor_sn_range AS validita,
+                   d.preview_url,
+                   g.name AS gruppo, s.name AS sottogruppo,
                    ({punteggio}) AS rilevanza,
                    ({pertinenza}) AS pertinenza_tavola
             FROM part p
