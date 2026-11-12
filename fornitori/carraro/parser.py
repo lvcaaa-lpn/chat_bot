@@ -29,6 +29,7 @@ from urllib.parse import urlsplit
 from bs4 import BeautifulSoup, NavigableString
 
 NON_FORNIBILE = "00000000"
+BASE = "https://ricambinet.antoniocarraro.it"   # come client.BASE: gli URL delle immagini si salvano completi
 _FRECCIA = re.compile(r"\s*(?:→|->)\s*")
 
 
@@ -48,6 +49,19 @@ def _percorso(url):
         return ""
     p = urlsplit(url).path
     return p if p.startswith("/") else "/" + p
+
+
+def _immagine(url):
+    """URL completo dell'immagine ORIGINALE (solo l'indirizzo: le immagini
+    non si scaricano, si potranno scaricare a parte in seguito). Il sito
+    serve le miniature come /imageserver/<formato>/files/...: togliendo i
+    primi due pezzi si ottiene il file originale /files/... (verificato:
+    200, immagine piena). '' se manca o se il sito mette un URL vuoto
+    (solo il dominio, succede sulle tavole senza disegno)."""
+    p = _percorso(url)
+    m = re.match(r"^/imageserver/[^/]+(/files/.+)$", p)
+    p = m.group(1) if m else p
+    return BASE + p if p.startswith("/files/") else ""
 
 
 def _intervallo(testo):
@@ -118,7 +132,10 @@ def _prodotti(contenitore):
         nome_grezzo = pezzi[0] if pezzi else ""
         slug = pezzi[-1] if len(pezzi) > 1 else _percorso(link["href"]).rstrip("/").rsplit("/", 1)[-1]
         nome, matricole = _intervallo_nel_nome(nome_grezzo)
+        # foto del prodotto: caricata da JS, l'indirizzo sta in data-loadimage
+        img = art.select_one("img[data-loadimage]") or art.select_one("img[src]")
         out.append({
+            "immagine": _immagine(img.get("data-loadimage") or img.get("src")) if img else "",
             "nome": nome,
             "nome_completo": nome_grezzo,
             "slug": slug,
@@ -265,8 +282,44 @@ def _intero(testo):
     return int(m.group()) if m else None
 
 
+def _disegno(s, html):
+    """Disegno esploso della tavola: URL, dimensioni in pixel e punti
+    cliccabili (un riquadro per ogni numero di posizione, in pixel
+    dell'immagine originale: servono per evidenziare il pezzo sul
+    disegno). Il disegno sta come background-image di #pngdata, le
+    dimensioni nelle variabili JS imgWidth/imgHeight della pagina."""
+    png = s.select_one("#pngdata")
+    m = re.search(r"url\(\s*['\"]?([^'\")]+)", png.get("style", "")) if png else None
+    url = _immagine(m.group(1)) if m else ""
+    larg = re.search(r"imgWidth\s*=\s*['\"]?(\d+)", html)
+    alt = re.search(r"imgHeight\s*=\s*['\"]?(\d+)", html)
+
+    def num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+    punti = []
+    for p in s.select("#pngdata .clickablePoint"):
+        punti.append({"posizione": (p.get("data-label") or "").strip(),
+                      "x": num(p.get("data-left")), "y": num(p.get("data-top")),
+                      "larghezza": num(p.get("data-width")),
+                      "altezza": num(p.get("data-height"))})
+    return {"url": url,
+            "larghezza": int(larg.group(1)) if url and larg else None,
+            "altezza": int(alt.group(1)) if url and alt else None,
+            "punti": punti if url else []}
+
+
 def parse_tavola(html):
-    """Pagina di una tavola: intestazione e righe della distinta."""
+    """Pagina di una tavola: intestazione, disegno e righe della distinta.
+
+    ATTENZIONE: le righe dipendono dall'indirizzo da cui si apre la
+    tavola. Dall'indirizzo diretto /<codice> il sito mostra TUTTE le righe
+    (tutte le varianti di tutti i modelli, es. a01-0050-01: 90 righe);
+    dal percorso di un modello (/catalogo/.../<modello>/<codice>) solo
+    quelle valide per quel modello (Tony 10900 SR: 52, Tony 8900 SR: 51).
+    Il parser e' lo stesso, cambia solo cosa si chiede al sito."""
     s = _soup(html)
     # intestazione vera: <div id="schema-title">. Altri .schema-title nella
     # pagina appartengono all'elenco "altri prodotti" nella colonna laterale
@@ -302,6 +355,7 @@ def parse_tavola(html):
         "codice": codice,
         "titolo": titolo,
         "matricole": _intervallo(_testo(etichetta)),
+        "disegno": _disegno(s, html),
         "righe": righe,
         "modelli": modelli,
     }

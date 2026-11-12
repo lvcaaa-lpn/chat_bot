@@ -123,7 +123,7 @@ def login(sessione, username, password, timeout=TIMEOUT):
 
 
 class CarraroClient:
-    def __init__(self, username=None, password=None, delay=DELAY):
+    def __init__(self, username=None, password=None, delay=DELAY, connessioni=10):
         self.username = username or config.leggi_credenziale(
             "carraro_username.txt", "CARRARO_USERNAME")
         self.password = password or config.leggi_credenziale(
@@ -134,6 +134,9 @@ class CarraroClient:
                 "e CARRARO_PASSWORD (nel .env o come variabili d'ambiente).")
 
         self.delay = delay
+        # connessioni HTTP tenute aperte: almeno quanti thread usano il
+        # client insieme (con meno, requests le chiude e riapre di continuo)
+        self.connessioni = connessioni
         self._ultimo = 0.0
         self._throttle_lk = threading.Lock()
         self._sessione_lk = threading.Lock()
@@ -146,6 +149,8 @@ class CarraroClient:
         s = requests.Session()
         s.headers.update({"User-Agent": _UA,
                           "Accept-Language": "it-IT,it;q=0.9"})
+        s.mount("https://", requests.adapters.HTTPAdapter(
+            pool_connections=2, pool_maxsize=self.connessioni))
         return s
 
     def _login(self):

@@ -25,7 +25,8 @@ from .crawler import Crawler
 HELP = """
 Comandi disponibili
 -------------------
-  brand [nome]        cambia marca (SAME, DEUTZ-FAHR, HURLIMANN, LAMBORGHINI)
+  brand [nome]        cambia marca (SAME, DEUTZ-FAHR, HURLIMANN, LAMBORGHINI,
+                       GREGOIRE, VITIBOT)
   fam [testo]         elenca/filtra le famiglie della marca corrente
   mod [testo]         elenca/filtra i modelli della famiglia selezionata
   vin <vin>           risale a famiglia/modello dal numero di telaio
@@ -38,6 +39,11 @@ Comandi disponibili
   find <testo|codice> cerca un ricambio per codice o descrizione
   where <codice>      su quali modelli/tavole viene usato un codice
   subs <codice>       codici sostitutivi
+  db <codice> [tutto] SOLO DB LOCALE, nessuna richiesta al portale: tavole
+                       dove compare il codice, piu' quelle dei codici vecchi
+                       che lui sostituisce (come conta il portale) e i
+                       codici nuovi che sostituiscono lui. 'tutto' = elenco
+                       completo invece delle prime righe
   crawl model         scarica nel DB il modello selezionato
   crawl family        scarica nel DB tutta la famiglia selezionata
   bench [worker] [n]  TEST: scarica n tavole del gruppo selezionato con
@@ -331,6 +337,87 @@ class Cli:
         for s in subs:
             print(f"    {s['code']:<18} x{str(s['quantity']):<4} {s['description']}")
 
+    # righe mostrate per sezione da 'db' senza l'opzione 'tutto'
+    DB_RIGHE = 30
+
+    def _tavole_db(self, code):
+        """Tavole del DB locale in cui compare 'code' (una riga per modello
+        e posizione)."""
+        return self.db.query("""
+            SELECT md.brand, f.name AS famiglia, m.name AS modello,
+                   g.name AS gruppo, d.name AS tavola, d.rif, p.position,
+                   p.description, p.replaced
+            FROM part p
+            JOIN drawing d ON d.revision_id = p.revision_id
+            JOIN model_drawing md ON md.revision_id = p.revision_id
+            LEFT JOIN family f ON f.brand = md.brand AND f.row_id = md.family_id
+            LEFT JOIN model m ON m.brand = md.brand AND m.row_id = md.model_id
+            LEFT JOIN grp g ON g.row_id = md.group_id
+            WHERE p.code = ?
+            ORDER BY md.brand, f.name, m.name, d.rif
+        """, (code,))
+
+    def _stampa_tavole(self, righe, tutto):
+        per_marca = {}
+        for r in righe:
+            per_marca[r["brand"]] = per_marca.get(r["brand"], 0) + 1
+        print("    per marca: " + ", ".join(f"{b} {n}" for b, n in per_marca.items()))
+        mostra = righe if tutto else righe[:self.DB_RIGHE]
+        for r in mostra:
+            print(f"    {r['brand']:<11} {(r['modello'] or '?')[:38]:<38} "
+                  f"{(r['gruppo'] or '?')[:28]:<28} {r['rif'] or '':<14} "
+                  f"pos {r['position'] or '-':<5} {(r['tavola'] or '')[:40]}")
+        if len(righe) > len(mostra):
+            print(f"    ... e altre {len(righe) - len(mostra)} "
+                  f"(db <codice> tutto per l'elenco completo)")
+
+    def cmd_db(self, arg):
+        parti = arg.split()
+        if not parti:
+            print("  uso: db <codice> [tutto]")
+            return
+        code = parti[0]
+        tutto = len(parti) > 1 and parti[1].lower() == "tutto"
+
+        dirette = self._tavole_db(code)
+        nuovi = self.db.query("SELECT new_code, description, quantity FROM substitution "
+                              "WHERE old_code = ?", (code,))
+        vecchi = self.db.query("SELECT old_code, description FROM substitution "
+                               "WHERE new_code = ? ORDER BY old_code", (code,))
+        descr = (dirette[0]["description"] if dirette
+                 else (vecchi[0]["description"] if vecchi
+                       else (nuovi[0]["description"] if nuovi else None)))
+        print(f"  {code}: {descr or '(codice non presente nel DB locale)'}")
+
+        print(f"\n  --- tavole dove compare {code} ({len(dirette)}) ---")
+        if dirette:
+            if any(r["replaced"] for r in dirette):
+                print("    (nelle tavole e' segnato come SOSTITUITO: vedi sotto i codici nuovi)")
+            self._stampa_tavole(dirette, tutto)
+        else:
+            print("    nessuna: il codice non e' stampato in nessuna tavola")
+
+        if nuovi:
+            print(f"\n  --- {code} e' sostituito da ---")
+            for s in nuovi:
+                print(f"    {s['new_code']:<18} x{str(s['quantity'] or ''):<4} {s['description'] or ''}")
+
+        totale = len(dirette)
+        if vecchi:
+            print(f"\n  --- codici vecchi sostituiti da {code} ({len(vecchi)}) ---")
+            for v in vecchi:
+                righe = self._tavole_db(v["old_code"])
+                totale += len(righe)
+                print(f"\n  {v['old_code']} ({v['description'] or ''}): {len(righe)} tavole")
+                if righe:
+                    self._stampa_tavole(righe, tutto)
+
+        print(f"\n  totale: {len(dirette)} dirette"
+              + (f" + {totale - len(dirette)} dei codici vecchi = {totale}" if vecchi else ""))
+        if vecchi:
+            print("  (il portale, cercando il codice nuovo, conta anche parte delle "
+                  "tavole dei codici vecchi: il suo numero sta tra i due)")
+
     def cmd_crawl(self, arg):
         if arg == "model":
             if not self.need("family", "model"):
@@ -469,7 +556,7 @@ class Cli:
             "vin": self.cmd_vin, "serial": self.cmd_serial, "engine": self.cmd_engine,
             "grp": self.cmd_grp, "sub": self.cmd_sub, "tav": self.cmd_tav,
             "parts": self.cmd_parts, "find": self.cmd_find, "where": self.cmd_where,
-            "subs": self.cmd_subs, "crawl": self.cmd_crawl, "bench": self.cmd_bench,
+            "subs": self.cmd_subs, "db": self.cmd_db, "crawl": self.cmd_crawl, "bench": self.cmd_bench,
             "estimate": self.cmd_estimate, "stats": self.cmd_stats,
             "modelli": self.cmd_modelli, "incompleti": self.cmd_incompleti,
             "state": lambda a: self.show_state(),
