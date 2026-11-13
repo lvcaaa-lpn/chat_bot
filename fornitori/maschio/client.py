@@ -43,6 +43,7 @@ log = logging.getLogger("maschio.client")
 BASE = "https://work.maschiogaspardo.com"
 URL_LOGIN_FORM = BASE + "/main_login.asp"
 URL_LOGIN = BASE + "/login_check.asp"
+URL_LOGOUT = BASE + "/main_logout.asp"
 URL_VERIFICA = BASE + "/applications/books/book_parts_idx.asp"
 
 AJAX_ESPLOSI = "/applications/books/book_parts_expl-ajax.asp"
@@ -51,7 +52,12 @@ ANAGRAFICA = "/applications/books/book_parts_info-view.asp"
 
 DELAY = 0.05         # pausa minima fra due richieste (su tutti i thread)
 TIMEOUT = 60
-TIMEOUT_SVG = 180    # gli SVG pesano ~1 MB in media, fino a 6+ MB
+TIMEOUT_SVG = 60     # secondi SENZA ricevere nulla (non sul totale). Le
+                     # tavole "bloccanti" non mandano nemmeno l'intestazione
+                     # (misurato: 161501 muta anche dopo 600 s); le altre
+                     # arrivano in 2-6 s anche quando pesano MB.
+TIMEOUT_LOGOUT_IN_SOSPESO = 3600  # il logout di una sessione bloccata parte
+                                  # solo quando il server la libera
 SVG_PARALLELI = 1    # SVG scaricati insieme: la sessione ASP li esegue comunque
                      # uno alla volta, e intanto blocca ogni altra richiesta
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -68,6 +74,27 @@ class LoginError(RuntimeError):
 
 class MaschioNonRaggiungibile(RuntimeError):
     """Portale non raggiungibile o login impossibile."""
+
+
+class RichiestaAppesa(MaschioNonRaggiungibile):
+    """Nessuna risposta entro il timeout di lettura. Sul server la richiesta
+    CONTINUA a girare anche se chiudiamo la connessione (classic ASP), e
+    finche' non finisce tiene bloccata la sessione (session lock: misurato,
+    anche il logout resta in coda). Ritentare sulla stessa sessione non
+    serve: chi la riceve deve abbandonare la sessione (abbandona_sessione)."""
+
+
+def portale_risponde(timeout=20):
+    """Controllo leggero, SENZA sessione: la pagina di login. Serve a capire
+    se il portale e' sano dopo una richiesta appesa (le richieste appese
+    occupano processi del server: troppe e il portale smette di rispondere
+    a tutti)."""
+    try:
+        r = requests.get(URL_LOGIN_FORM, timeout=(10, timeout),
+                         headers={"User-Agent": _UA})
+        return r.status_code == 200
+    except requests.RequestException:
+        return False
 
 
 def _decodifica(r):
@@ -148,6 +175,39 @@ class MaschioClient:
         self._login()
 
     # ------------------------------------------------------------------
+    def abbandona_sessione(self):
+        """Dopo una RichiestaAppesa: la sessione resta bloccata sul server
+        finche' la richiesta appesa non finisce. Le si manda un logout "in
+        sospeso" (thread a parte, timeout lungo: parte quando il server la
+        libera, cosi' non resta un accesso aperto) e si rifa' il login su una
+        sessione nuova. Chi chiama deve limitare quante volte succede."""
+        with self._sessione_lk:
+            vecchia = self.s
+            threading.Thread(target=self._logout, name="logout-in-sospeso",
+                             args=(vecchia, TIMEOUT_LOGOUT_IN_SOSPESO),
+                             daemon=True).start()
+            log.warning("Maschio: sessione abbandonata (logout in sospeso), "
+                        "nuovo login")
+            self.s = self._nuova_sessione()
+            self._login()
+
+    @staticmethod
+    def _logout(sessione, timeout):
+        t0 = time.time()
+        try:
+            sessione.get(URL_LOGOUT, timeout=(15, timeout), allow_redirects=False)
+            log.info("Maschio: logout eseguito (%.0fs)", time.time() - t0)
+        except requests.RequestException as e:
+            log.warning("Maschio: logout non riuscito dopo %.0fs: %s",
+                        time.time() - t0, type(e).__name__)
+        finally:
+            sessione.close()
+
+    def chiudi(self, timeout=15):
+        """Logout a fine lavoro: non lasciare accessi aperti sull'account."""
+        self._logout(self.s, timeout)
+
+    # ------------------------------------------------------------------
     def _nuova_sessione(self):
         s = requests.Session()
         s.headers.update({"User-Agent": _UA,
@@ -208,6 +268,11 @@ class MaschioClient:
             try:
                 r = self.s.request(metodo, url, timeout=timeout,
                                    allow_redirects=False, **kw)
+            except requests.ReadTimeout as e:
+                # niente nuovi tentativi: la sessione e' ormai bloccata
+                log.debug("%s %s APPESA dopo %dms", metodo, url,
+                          (time.time() - t0) * 1000)
+                raise RichiestaAppesa(f"nessuna risposta in {timeout}s: {url}") from e
             except (requests.Timeout, requests.ConnectionError) as e:
                 log.debug("%s %s tentativo=%d -> %s", metodo, url, tentativo,
                           type(e).__name__)
@@ -215,8 +280,8 @@ class MaschioClient:
                     raise MaschioNonRaggiungibile(f"{type(e).__name__}: {e}") from e
                 time.sleep(2 ** tentativo)
                 continue
-            log.debug("%s %s %d %dms", metodo, url, r.status_code,
-                      (time.time() - t0) * 1000)
+            log.debug("%s %s %d %dms %dKB", metodo, url, r.status_code,
+                      (time.time() - t0) * 1000, len(r.content) // 1000)
             if _rimanda_al_login(r):
                 raise SessioneScaduta(f"{r.status_code} su {url}")
             if r.status_code >= 500 and tentativo < retries:
@@ -241,7 +306,7 @@ class MaschioClient:
 
     def svg_tavola(self, cartella, table_id):
         with self._svg_sem:
-            return self.richiesta("GET", AJAX_ESPLOSI, timeout=TIMEOUT_SVG,
+            return self.richiesta("GET", AJAX_ESPLOSI, timeout=(15, TIMEOUT_SVG),
                                   params={"act": "load", "dir": cartella,
                                           "tableId": table_id})
 

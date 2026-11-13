@@ -33,6 +33,7 @@ claude.txt
 # vero vive in fornitori/sdf/sdf.db, questo in root non serve
 /sdf.db
 fornitori/carraro/carraro.db
+fornitori/carraro/carraro_v1.db
 
 # materiale di analisi locale (glossario sinonimi grezzo, script una tantum
 # di verifica catalogo): utile solo qui, non serve al bot ne' all'azienda
@@ -56,7 +57,7 @@ dati/maschio_username.txt
 dati/maschio_password.txt
 
 # DB e copie locali
-fornitori/maschio/maschio.db
+fornitori/maschio/maschio*.db
 fornitori/sdf/sdf_old.db
 
 # output di analisi una tantum

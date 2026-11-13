@@ -78,7 +78,10 @@ CREATE TABLE IF NOT EXISTS tavole (
   ordine       INTEGER,
   url_disegno  TEXT,                  -- SVG, richiede login
   n_posizioni  INTEGER,
-  scaricata_il TEXT                   -- NULL = posizioni da scaricare
+  scaricata_il TEXT,                  -- NULL = posizioni da scaricare
+  bloccata_il  TEXT,                  -- il portale non risponde su questa
+                                      -- tavola: esclusa dal download
+  motivo_blocco TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_tavole_release ON tavole(release);
 
@@ -128,6 +131,11 @@ class Db:
             self.con.execute("PRAGMA busy_timeout=60000")
             self.con.execute("PRAGMA foreign_keys=ON")
             self.con.executescript(SCHEMA)
+            # DB creati prima delle colonne del blocco
+            colonne = {r[1] for r in self.con.execute("PRAGMA table_info(tavole)")}
+            for col in ("bloccata_il", "motivo_blocco"):
+                if col not in colonne:
+                    self.con.execute(f"ALTER TABLE tavole ADD COLUMN {col} TEXT")
             self.con.commit()
 
     def close(self):
@@ -224,10 +232,29 @@ class Db:
 
     def tavole_da_scaricare(self, limite=None):
         sql = """SELECT t.*, r.cartella FROM tavole t JOIN release r ON r.id=t.release
-                 WHERE t.scaricata_il IS NULL ORDER BY t.release, t.ordine"""
+                 WHERE t.scaricata_il IS NULL AND t.bloccata_il IS NULL
+                 ORDER BY t.release, t.ordine"""
         if limite:
             sql += f" LIMIT {int(limite)}"
         return self.query(sql)
+
+    def segna_bloccata(self, tavola_id, motivo):
+        self._write([("UPDATE tavole SET bloccata_il=?, motivo_blocco=? WHERE id=?",
+                      (_adesso(), motivo, tavola_id), False)])
+
+    def tavole_bloccate(self):
+        return self.query("""SELECT t.id, t.release, t.numero, t.titolo, r.cartella,
+                                    t.bloccata_il, t.motivo_blocco
+                             FROM tavole t JOIN release r ON r.id=t.release
+                             WHERE t.bloccata_il IS NOT NULL ORDER BY t.id""")
+
+    def sblocca_tavole(self):
+        """Rimette in coda le tavole bloccate (per --riprova-bloccanti)."""
+        with self._lk:
+            n = self.con.execute("""UPDATE tavole SET bloccata_il=NULL, motivo_blocco=NULL
+                                    WHERE bloccata_il IS NOT NULL""").rowcount
+            self.con.commit()
+        return n
 
     def salva_posizioni(self, tavola_id, posizioni):
         """posizioni: [(riga, etichetta, codice)]. Sostituite in blocco e
@@ -264,6 +291,7 @@ class Db:
                                           (SELECT 1 FROM release_modello m WHERE m.release=r.id)"""),
             "tavole": n("SELECT COUNT(*) FROM tavole"),
             "tavole_scaricate": n("SELECT COUNT(*) FROM tavole WHERE scaricata_il IS NOT NULL"),
+            "tavole_bloccate": n("SELECT COUNT(*) FROM tavole WHERE bloccata_il IS NOT NULL"),
             "posizioni": n("SELECT COUNT(*) FROM posizioni"),
             "posizioni_senza_codice": n("SELECT COUNT(*) FROM posizioni WHERE codice IS NULL"),
             "ricambi": n("SELECT COUNT(*) FROM ricambi"),
